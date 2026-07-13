@@ -1,0 +1,9 @@
+{
+  "name": "node",
+  "checks": [
+    "missing input validation",
+    "sql or nosql injection risk",
+    "sync io in request path",
+    "missing timeout on external io"
+  ]
+}

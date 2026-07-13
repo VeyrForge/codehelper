@@ -1,0 +1,35 @@
+{
+  "name": "codehelper-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root build orchestrator for the codehelper Go CLI + MCP. Works on Linux, macOS, and Windows. VS Code extension lives on the vscode-extension branch.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "install": "node scripts/install-full.mjs",
+    "build": "npm run build:go",
+
+    "build:cli": "node scripts/build-go.mjs codehelper",
+    "build:mcp": "node scripts/build-go.mjs codehelper-mcp",
+    "build:go": "npm run build:cli && npm run build:mcp",
+
+    "install:cli": "node scripts/install-go.mjs codehelper",
+    "install:mcp": "node scripts/install-go.mjs codehelper-mcp",
+    "install:go": "npm run install:cli && npm run install:mcp",
+
+    "update:cli": "npm run build:cli && npm run install:cli",
+    "update:mcp": "npm run build:mcp && npm run install:mcp",
+    "update:go": "npm run build:go && npm run install:go",
+
+    "update:all": "npm run update:go",
+    "build:all": "npm run update:go",
+
+    "clean:bin": "node scripts/clean.mjs bin",
+    "clean": "npm run clean:bin",
+
+    "share": "node scripts/package-share.mjs",
+
+    "release": "node scripts/release.mjs"
+  }
+}

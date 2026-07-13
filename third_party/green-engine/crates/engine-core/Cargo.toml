@@ -1,0 +1,65 @@
+[package]
+name = "engine-core"
+version = "0.8.1"
+edition = "2021"
+description = "Green Engine core: dynamic MoE expert scheduler (cache + predictor + prefetch)"
+
+[features]
+default = []
+# GPU/C++ backend over FFI; links the `kernels` crate's CUDA/HIP .so. Off by default so the
+# CPU build needs no GPU toolkit.
+gpu = []
+# Real Green Compress formats (Q8 + low-rank/sparse repair) as a compressed expert tier. Off by
+# default so the core build stays dependency-free; `--features green` pulls the sibling crate.
+green = ["dep:greencompress"]
+
+[dependencies]
+# Sibling compression lab — only compiled under `--features green` (see `src/green.rs`).
+greencompress = { path = "../../../green-compress/rust", optional = true }
+
+[lib]
+name = "engine_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "green_bench"
+path = "src/bin/green_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "predict_bench"
+path = "src/bin/predict_bench.rs"
+
+[[bin]]
+name = "predict_hidden_bench"
+path = "src/bin/predict_hidden_bench.rs"
+
+[[bin]]
+name = "compare_bench"
+path = "src/bin/compare_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "quality_bench"
+path = "src/bin/quality_bench.rs"
+
+[[bin]]
+name = "frontier_bench"
+path = "src/bin/frontier_bench.rs"
+
+[[bin]]
+name = "full_bench"
+path = "src/bin/full_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "mixed_bench"
+path = "src/bin/mixed_bench.rs"
+
+[[bin]]
+name = "matvec_bench"
+path = "src/bin/matvec_bench.rs"

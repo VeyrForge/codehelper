@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "codehelper": {
+      "args": [
+        "mcp"
+      ],
+      "command": "codehelper"
+    }
+  }
+}

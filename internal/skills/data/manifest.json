@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0",
+  "skills": [
+    {
+      "id": "codehelper-guide",
+      "description": "Base workflow for codehelper MCP-first execution."
+    },
+    {
+      "id": "codehelper-exploring",
+      "description": "Fast repo exploration with project_context, query, context."
+    },
+    {
+      "id": "codehelper-impact-analysis",
+      "description": "Blast-radius and change-risk checks before edits."
+    },
+    {
+      "id": "codehelper-debugging",
+      "description": "Error-led debugging workflow with graph context."
+    },
+    {
+      "id": "codehelper-refactoring",
+      "description": "Safe rename/refactor sequence with dry-run first."
+    },
+    {
+      "id": "codehelper-docs",
+      "description": "Fetch up-to-date, version-correct official library/framework docs with the docs tool."
+    }
+  ]
+}

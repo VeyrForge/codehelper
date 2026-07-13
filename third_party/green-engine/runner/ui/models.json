@@ -1,0 +1,122 @@
+[
+  {
+    "id": "llama-3.2-1b",
+    "name": "Llama 3.2 1B Instruct",
+    "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 0.8,
+    "min_vram_gb": 1.2,
+    "min_ram_gb": 3,
+    "ctx_default": 8192,
+    "tier": "starter",
+    "blurb": "Fast, tiny — great for testing the stack and MCP routing."
+  },
+  {
+    "id": "llama-3.2-3b",
+    "name": "Llama 3.2 3B Instruct",
+    "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 2.0,
+    "min_vram_gb": 3,
+    "min_ram_gb": 6,
+    "ctx_default": 8192,
+    "tier": "balanced",
+    "blurb": "Better quality than 1B; still fits most GPUs."
+  },
+  {
+    "id": "qwen2.5-1.5b",
+    "name": "Qwen 2.5 1.5B Instruct",
+    "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 1.1,
+    "min_vram_gb": 1.8,
+    "min_ram_gb": 4,
+    "ctx_default": 8192,
+    "tier": "starter",
+    "blurb": "Strong small model; good multilingual basics."
+  },
+  {
+    "id": "qwen2.5-7b",
+    "name": "Qwen 2.5 7B Instruct",
+    "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 4.7,
+    "min_vram_gb": 6,
+    "min_ram_gb": 10,
+    "ctx_default": 8192,
+    "tier": "quality",
+    "blurb": "High quality 7B — needs 8+ GB VRAM for full GPU."
+  },
+  {
+    "id": "llama-3.1-8b",
+    "name": "Llama 3.1 8B Instruct",
+    "repo": "bartowski/Llama-3.1-8B-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 4.9,
+    "min_vram_gb": 6.5,
+    "min_ram_gb": 10,
+    "ctx_default": 8192,
+    "tier": "quality",
+    "blurb": "Popular 8B instruct — sweet spot for 12–16 GB GPUs."
+  },
+  {
+    "id": "olmo-1b-7b",
+    "name": "OLMoE 1B-7B Instruct",
+    "repo": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 4.5,
+    "min_vram_gb": 5,
+    "min_ram_gb": 8,
+    "ctx_default": 8192,
+    "tier": "moe",
+    "blurb": "MoE — Green Engine's specialty; sparse experts, long context."
+  },
+  {
+    "id": "mistral-7b",
+    "name": "Mistral 7B Instruct v0.3",
+    "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 4.4,
+    "min_vram_gb": 6,
+    "min_ram_gb": 10,
+    "ctx_default": 8192,
+    "tier": "quality",
+    "blurb": "Classic 7B — reliable chat and code."
+  },
+  {
+    "id": "hymt2-7b",
+    "name": "Hy-MT2 7B (translation)",
+    "repo": "tencent/Hy-MT2-7B-GGUF",
+    "file": "Q4_K_M.gguf",
+    "size_gb": 4.6,
+    "min_vram_gb": 6,
+    "min_ram_gb": 10,
+    "ctx_default": 4096,
+    "tier": "translate",
+    "blurb": "Multilingual translation route (ge translate)."
+  },
+  {
+    "id": "gemma-2-2b",
+    "name": "Gemma 2 2B Instruct",
+    "repo": "bartowski/gemma-2-2b-it-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 1.6,
+    "min_vram_gb": 2.5,
+    "min_ram_gb": 5,
+    "ctx_default": 8192,
+    "tier": "balanced",
+    "blurb": "Google Gemma 2 — efficient 2B class."
+  },
+  {
+    "id": "phi-3.5-mini",
+    "name": "Phi-3.5 Mini Instruct",
+    "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+    "file": "*Q4_K_M.gguf",
+    "size_gb": 2.3,
+    "min_vram_gb": 3.5,
+    "min_ram_gb": 6,
+    "ctx_default": 4096,
+    "tier": "balanced",
+    "blurb": "Microsoft Phi — strong reasoning for its size."
+  }
+]

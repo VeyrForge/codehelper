@@ -1,0 +1,11 @@
+[package]
+name = "ge"
+version = "0.9.1"
+edition = "2021"
+description = "Green Engine CLI — run, compress (via Green Compress), and manage local LLMs"
+
+[[bin]]
+name = "ge"
+path = "src/main.rs"
+
+# Dependency-free: `ge` orchestrates by shelling out to curl/git/make/lclab/runner.

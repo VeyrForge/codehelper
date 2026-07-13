@@ -1,0 +1,29 @@
+{
+  "name": "wordpress",
+  "checks": [
+    "missing nonce check",
+    "missing capability check",
+    "unsanitized input",
+    "unescaped output"
+  ],
+  "risk_patterns": [
+    {
+      "id": "wp_sql_without_prepare",
+      "match": "$wpdb->query(",
+      "requires": "$wpdb->prepare",
+      "severity": "critical"
+    },
+    {
+      "id": "wp_ajax_without_nonce",
+      "match": "wp_ajax_",
+      "requires_any": ["check_ajax_referer", "wp_verify_nonce"],
+      "severity": "high"
+    },
+    {
+      "id": "raw_superglobal_echo",
+      "match_any": ["echo $_", "print $_"],
+      "requires_any": ["esc_html", "esc_attr", "esc_url", "wp_kses"],
+      "severity": "high"
+    }
+  ]
+}
