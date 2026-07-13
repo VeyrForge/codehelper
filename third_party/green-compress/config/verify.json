@@ -1,0 +1,5 @@
+{
+  "cwd": "rust",
+  "build_cmd": "cargo check",
+  "test_cmd": "cargo test"
+}

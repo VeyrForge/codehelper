@@ -1,0 +1,65 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Test
+        run: CGO_ENABLED=1 go test ./...
+        working-directory: .
+      - name: Reset eval index state
+        run: rm -rf .codehelper
+        working-directory: .
+      - name: Build index for eval
+        run: CGO_ENABLED=1 go run ./cmd/codehelper analyze
+        working-directory: .
+      - name: Qrels core regression gate
+        run: CGO_ENABLED=1 go test ./internal/bench/ -run QrelsCore -count=1 -v
+        working-directory: .
+      - name: Real-index NL retrieval gate
+        run: CGO_ENABLED=1 go test ./internal/retrieval/ -run RealIndex -count=1 -v
+        working-directory: .
+      - name: Agent discovery harness tests
+        run: node --test scripts/lib/agent-discovery.test.mjs
+        working-directory: .
+      - name: Write CI eval suite
+        run: |
+          cat > /tmp/ci-eval-suite.json <<'EOF'
+          {
+            "prompts": [
+              {
+                "prompt_id": "intake_project_brief",
+                "must_contain": ["PRIMARY OUTCOME", "ASSUMPTION:", "[UNCERTAIN]"]
+              },
+              {
+                "prompt_id": "planning_contract",
+                "must_contain": ["VERIFICATION", "ROLLBACK", "FAILURE CONDITIONS", "[UNCERTAIN]"]
+              },
+              {
+                "prompt_id": "agent_guardrails",
+                "must_contain": ["argv", "graph tools", "fail closed", "[UNCERTAIN]"],
+                "must_not_contain": ["console.log", "FIXME"]
+              }
+            ]
+          }
+          EOF
+        working-directory: .
+      - name: Eval gate
+        run: CGO_ENABLED=1 go run ./cmd/codehelper eval --repo codehelper --suite /tmp/ci-eval-suite.json
+        working-directory: .

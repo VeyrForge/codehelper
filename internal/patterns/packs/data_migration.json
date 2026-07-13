@@ -1,0 +1,38 @@
+{
+  "id": "data_migration",
+  "triggers": [
+    "migration",
+    "schema change",
+    "alter table",
+    "add column",
+    "drop column",
+    "rename column",
+    "backfill",
+    "data migration",
+    "ddl",
+    "create table",
+    "create index"
+  ],
+  "requirements": [
+    "Write migration as a single, idempotent forward step plus a usable rollback.",
+    "Never DROP or TRUNCATE production tables/columns without a documented deprecation window.",
+    "When adding NOT NULL to an existing column, ship the default or backfill first.",
+    "Add or update indexes only where the query plan requires them; remove unused indexes.",
+    "Wrap multi-step writes in a transaction; pick isolation explicitly when it matters.",
+    "Run the migration in a non-production environment with realistic data first.",
+    "Update ORM models, fixtures, and seed data to match the new schema."
+  ],
+  "security": [
+    "never embed customer data in migration files",
+    "ensure new columns holding PII are encrypted/masked per policy"
+  ],
+  "performance": [
+    "for large tables, prefer concurrent/online migrations or chunked backfills",
+    "avoid table rewrites during peak hours"
+  ],
+  "verify": [
+    "dry-run the migration locally and inspect the resulting schema",
+    "run existing tests against the migrated schema",
+    "verify rollback path actually restores the previous schema"
+  ]
+}

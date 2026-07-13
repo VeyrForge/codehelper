@@ -1,0 +1,9 @@
+{
+  "name": "go",
+  "checks": [
+    "context not propagated",
+    "http client without timeout",
+    "ignored error",
+    "missing transaction around multi-write"
+  ]
+}

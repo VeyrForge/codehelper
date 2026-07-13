@@ -1,0 +1,19 @@
+[package]
+name = "green-weights-bench"
+version = "0.2.0"
+edition = "2021"
+description = "Green Engine bench: load Green-Compress weights, run a decode loop, report tok/s vs fp32"
+
+# Reuses the Green Compress decoder (load_layer_runtime + infer_layer_runtime) so Green Engine can
+# run compressed weights directly instead of only GGUF via llama.cpp.
+[dependencies]
+greencompress = { path = "../../../green-compress/rust" }
+serde_json = "1"
+
+[features]
+default = []
+gpu = ["greencompress/gpu"]
+
+[[bin]]
+name = "green-weights-bench"
+path = "src/main.rs"

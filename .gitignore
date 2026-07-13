@@ -1,0 +1,95 @@
+# Vendored toolchains / local caches
+.vendor/
+.codehelper/
+
+# Node
+node_modules/
+
+# VS Code extension (developed on branch vscode-extension, not on main)
+vscode-extension/
+
+# Release script scratch (never commit — `git add -A` during release must not pick this up)
+.release-commit-msg.txt
+
+# Build outputs
+/bin/
+/dist/
+/codehelper
+*.vsix
+*.exe
+vscode-extension/out/
+
+# VS Code workspace artifacts (keep .vscode/ shared if needed; ignore local-only dirs)
+.vscode-test/
+
+# Source maps (generated)
+**/*.map
+
+# AI assistant / editor-generated rule files (local, not for the repo)
+CLAUDE.md
+.cursor/
+.claude/
+
+# Stray indexer artifacts (generated when sub-paths get indexed as shards)
+*.tmp
+internal/*/AGENTS.md
+.testbeds/
+
+# Local-LLM / embedding experiment + generated artifacts (doc-synth output, model
+# sweeps, benchmark scratch) — produced per-machine, not source. Keeps the repo clean.
+*.synth.json
+*.gguf
+.ge-models/
+scratch-experiments/
+docs/LOCAL_LLM_BENCH.md
+
+# codehelper-eval output (derived from local transcripts; per-machine, may contain
+# snippets of your own code/sessions — never source).
+eval-results/
+
+# Internal notes, research drafts, session logs, and machine-specific benchmark
+# output — kept on disk for local use; excluded from public mirrors too.
+goal.md
+performance.txt
+docs/releases/
+docs/VERIFICATION_RUN.md
+docs/COMMAND_AUDIT.md
+docs/benchmark-results.json
+docs/ORCHESTRATION_BENCHMARK.md
+docs/LLM_USAGE.md
+docs/IMPROVEMENTS.md
+docs/MCP_EXTENSION_IDEAS.md
+docs/COMPARISON.md
+docs/EXAMPLE_QUESTIONS.md
+
+# docs/ — published subset only (everything else is local)
+docs/*
+!docs/MCP_TOOLS.md
+!docs/BENCHMARK.md
+!docs/public/
+!docs/public/**
+scripts/publish-public-mirrors.sh
+
+# third_party — research docs, experiments, infra (on disk; not tracked in codehelper)
+third_party/green-engine/docs/
+third_party/green-engine/experiments/
+third_party/green-engine/idea.md
+third_party/green-compress/docs/
+third_party/green-compress/experiments/
+third_party/green-compress/TEST_REPORT.md
+third_party/green-compress/scripts/vps-deploy.sh
+third_party/green-compress/scripts/vps-setup.sh
+third_party/green-compress/scripts/install-github-runner.sh
+third_party/green-compress/scripts/fix-github-runner.sh
+third_party/green-compress/scripts/backfill_benchmark_txt.py
+third_party/green-compress/scripts/codec_compare.py
+third_party/green-compress/scripts/compare_frontier.py
+third_party/green-compress/scripts/compare_runtime_stacks.py
+third_party/green-compress/scripts/e2e_mixed_precision.py
+third_party/green-compress/scripts/estimate_model_ram.py
+third_party/green-compress/scripts/mixed_precision_analysis.py
+third_party/green-compress/scripts/perplexity_mixed_precision.py
+third_party/green-compress/.github/workflows/deploy.yml
+
+# Rust build output from vendored green binaries (built only in CI)
+third_party/**/target/

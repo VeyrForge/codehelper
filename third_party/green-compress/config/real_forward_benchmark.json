@@ -1,0 +1,69 @@
+{
+  "name": "tinyllama_down_proj_L0_real_activations",
+  "goal_method": "green_optimal",
+  "output_dir": "out/benchmark/real_forward",
+  "matrix": {
+    "source": "safetensors",
+    "model_path": "models/tinyllama/model.safetensors",
+    "layer": 0,
+    "tensor_suffix": "mlp.down_proj.weight",
+    "transpose": true,
+    "weight_path": "out/benchmark/real_forward/w.mx"
+  },
+  "activations": {
+    "source": "forward_pass",
+    "model_path": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "layer": 0,
+    "rows": 64,
+    "seed": 42,
+    "path": "out/benchmark/real_forward/x_real.mx"
+  },
+  "repair_defaults": {
+    "iters": 8,
+    "seed": 3,
+    "fit_order": "sparse-first",
+    "sparse_mode": "imatrix",
+    "rank": 4,
+    "sparse_frac": 0.01,
+    "repair_passes": 8,
+    "outlier_frac": 0.0002
+  },
+  "benchmark": {
+    "matmul_iters": 3
+  },
+  "methods": [
+    {
+      "id": "fp32_uncompressed",
+      "type": "fp32",
+      "description": "Uncompressed FP32 reference"
+    },
+    {
+      "id": "green_smart",
+      "type": "green_smart",
+      "block": 32,
+      "description": "AWQ Q8 + imatrix repair baseline"
+    },
+    {
+      "id": "green_adaptive",
+      "type": "green_adaptive",
+      "block": 32,
+      "skip_repair_quality_pct": 99.5,
+      "description": "Skip repair when Q8 >= 99.50%"
+    },
+    {
+      "id": "green_optimal",
+      "type": "green_optimal",
+      "block": 32,
+      "skip_repair_quality_pct": 99.5,
+      "min_quality_pct": 99.5,
+      "description": "Recommended default"
+    },
+    {
+      "id": "green_spqr_svd",
+      "type": "green_spqr_svd",
+      "block": 16,
+      "svd_peel_rank": 4,
+      "description": "Escalation path"
+    }
+  ]
+}

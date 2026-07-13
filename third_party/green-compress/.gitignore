@@ -1,0 +1,48 @@
+# Build artifacts
+bin/
+rust/target/
+/target/
+out/
+/Cargo.lock
+*.o
+*.d
+
+# Downloaded models
+models/
+
+# Large experiment / tensor data (keep local only)
+*.f32
+*.mx
+*.q4
+*.rep
+*.safetensors
+*.npy
+mx/
+npy/
+bench_layers/
+
+# Python
+.venv/
+.python_deps/
+__pycache__/
+*.pyc
+
+# Bench outputs (local runs)
+bench/corpus/
+bench/scoreboard.csv
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local agent / IDE tooling
+.codehelper/
+.cursor/
+.claude/
+.mcp.json
+AGENTS.md
+CLAUDE.md

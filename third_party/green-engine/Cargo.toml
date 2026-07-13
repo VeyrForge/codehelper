@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine-core", "crates/ge"]
+# green-weights-bench is a local-only benchmark: it path-depends on an out-of-repo
+# green-compress checkout (~/Downloads/green-compress/rust), which doesn't exist on a
+# clean clone or in CI and broke every workspace build. Excluded so `ge`/`engine-core`
+# (the shipped artifacts) build everywhere; build it manually when that checkout exists.
+exclude = ["crates/green-weights-bench"]
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# Future members (see docs/green-engine-novel-idea.md roadmap):
+#   crates/backend-adapter   bridge to llama.cpp / ggml / KTransformers
+#   crates/kernels           CUDA/HIP expert-compute kernels (FFI)

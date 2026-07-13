@@ -1,0 +1,67 @@
+VeyrForge Source-Available License
+Green Compress (greencompress)
+Copyright (c) 2026 VeyrForge. All rights reserved.
+
+This license governs the Green Compress (`greencompress`) software (the "Software"), including its source code
+where VeyrForge publishes it. This is a SOURCE-AVAILABLE license, NOT an open
+source license.
+
+1. Grant of Use
+You are granted a limited, non-exclusive, non-transferable, revocable permission
+to:
+  (a) run and use the Software, including released binaries, for your own
+      personal or internal business purposes; and
+  (b) view the source code where VeyrForge has published it.
+
+2. Contributions (suggesting changes)
+Solely to prepare and submit a suggested change to VeyrForge (a "Contribution"),
+you may fork or reproduce the published source through the official VeyrForge
+repository and modify your copy. You may use such a copy for no purpose other
+than preparing that Contribution.
+By submitting a Contribution, you grant VeyrForge a perpetual, worldwide,
+irrevocable, royalty-free, sublicensable license to use, reproduce, modify,
+adapt, publish, and incorporate it into the Software and any VeyrForge product,
+and you represent that you have the right to grant that license.
+VeyrForge is under no obligation to review, accept, or use any Contribution.
+
+3. Restrictions
+Except as expressly permitted in Sections 1 and 2, and except with prior written
+permission from VeyrForge, you may NOT:
+  (a) copy or reproduce the Software or its source code;
+  (b) modify, adapt, translate, or create derivative works, or use any copy or
+      derivative for your own use, deployment, or release;
+  (c) publish, distribute, mirror, sublicense, lease, rent, or sell the Software
+      or any part of it;
+  (d) use the Software or its source, in whole or in part, to build or operate a
+      product or service that competes with or substitutes for it;
+  (e) make the Software or modified versions available to third parties;
+  (f) remove or alter any copyright, trademark, or proprietary notice.
+
+4. Ownership
+All rights, title, and interest in and to the Software, including all
+intellectual property rights and all accepted Contributions, remain exclusively
+with VeyrForge.
+
+5. No Open Source Grant
+This is not an open source license. No rights are granted except those expressly
+stated here.
+
+6. Termination
+Any breach automatically terminates the permissions granted. On termination you
+must immediately stop using and delete all copies in your possession or control.
+
+7. Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+8. Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, VEYRFORGE IS NOT LIABLE FOR ANY
+INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS
+OF DATA, PROFITS, OR REVENUE, ARISING FROM USE OF OR INABILITY TO USE THE
+SOFTWARE.
+
+9. Contact for Commercial or Redistribution Rights
+To request commercial, redistribution, modification, or OEM rights, contact
+VeyrForge for a separate written license.
+

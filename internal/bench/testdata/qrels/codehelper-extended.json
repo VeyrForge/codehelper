@@ -1,0 +1,9 @@
+{
+  "queries": [
+    {"id": "vocab",      "query": "project vocabulary seed glossary terms",   "relevant": ["expandVocabTerms", "vocab", "SplitIdentifier"]},
+    {"id": "semantic",   "query": "multilingual embedding rerank cosine",     "relevant": ["semanticRerankQuery", "SemanticEnabled", "EnsureEmbedder"]},
+    {"id": "similar",    "query": "similar implementation signature overlap", "relevant": ["FindSimilarSymbols", "boostSimilarity"]},
+    {"id": "snippet",    "query": "config file snippet search fallback",      "relevant": ["SearchFileSnippets", "FileSnippet"]},
+    {"id": "nl",         "query": "shut down the connection pool release",    "relevant": ["Close", "Shutdown"]}
+  ]
+}

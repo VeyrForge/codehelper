@@ -1,0 +1,9 @@
+{
+  "name": "svelte",
+  "checks": [
+    "unbounded list rendering",
+    "missing loading or error state",
+    "client-only heavy module not lazy loaded",
+    "unsafe html rendering"
+  ]
+}

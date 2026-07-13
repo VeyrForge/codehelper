@@ -1,0 +1,41 @@
+version: 2
+project_name: codehelper
+before:
+  hooks:
+    - go mod tidy
+builds:
+  # NOTE: the published GitHub release no longer uses goreleaser. CGO (tree-sitter)
+  # can't cross-compile to darwin/windows from one Linux runner, so .github/workflows/
+  # release.yml now builds every OS/arch NATIVELY on its own runner (a matrix) and
+  # merges the artifacts. This config is kept only for local linux/amd64 snapshots:
+  #   goreleaser build --snapshot --clean --single-target
+  - id: codehelper
+    main: ./cmd/codehelper
+    binary: codehelper
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w -X github.com/VeyrForge/codehelper/internal/version.linkVersion={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+  - id: codehelper-mcp
+    main: ./cmd/codehelper-mcp
+    binary: codehelper-mcp
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w -X github.com/VeyrForge/codehelper/internal/version.linkVersion={{.Version}}
+    goos:
+      - linux
+    goarch:
+      - amd64
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: "checksums.txt"
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
