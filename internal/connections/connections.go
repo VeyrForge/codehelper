@@ -89,6 +89,7 @@ func (h SSHHost) Enabled() bool { return !h.Disabled }
 type Config struct {
 	Databases  []DBConn       `json:"databases,omitempty"`
 	SSHHosts   []SSHHost      `json:"ssh_hosts,omitempty"`
+	WebSites   []WebSite      `json:"websites,omitempty"`
 	LogSources []LogSource    `json:"log_sources,omitempty"`
 	Aliases    []CommandAlias `json:"aliases,omitempty"`
 	Policy     Policy         `json:"policy,omitempty"`
@@ -167,7 +168,7 @@ func Save(repoRoot string, c Config) error {
 
 // Empty reports whether no profiles, log sources, or policy are configured.
 func (c Config) Empty() bool {
-	return len(c.Databases) == 0 && len(c.SSHHosts) == 0 &&
+	return len(c.Databases) == 0 && len(c.SSHHosts) == 0 && len(c.WebSites) == 0 &&
 		len(c.LogSources) == 0 && len(c.Aliases) == 0 && !c.Policy.IsConfigured()
 }
 
@@ -200,8 +201,8 @@ func validatePasswordRef(ref string) error {
 	return fmt.Errorf("password_ref must be %q, %q, or a reference like %q — never an inline secret", SecretRef, "env:VAR", "env:MY_DB_PASSWORD")
 }
 
-// SetEnabled toggles a profile (db or ssh) on/off by name, reporting whether a
-// profile matched.
+// SetEnabled toggles a profile (db, ssh, or website) on/off by name, reporting
+// whether a profile matched.
 func (c *Config) SetEnabled(name string, enabled bool) bool {
 	name = strings.TrimSpace(name)
 	found := false
@@ -214,6 +215,12 @@ func (c *Config) SetEnabled(name string, enabled bool) bool {
 	for i := range c.SSHHosts {
 		if strings.EqualFold(c.SSHHosts[i].Name, name) {
 			c.SSHHosts[i].Disabled = !enabled
+			found = true
+		}
+	}
+	for i := range c.WebSites {
+		if strings.EqualFold(c.WebSites[i].Name, name) {
+			c.WebSites[i].Disabled = !enabled
 			found = true
 		}
 	}
@@ -271,7 +278,7 @@ func (c *Config) AddSSHHost(h SSHHost) error {
 	return nil
 }
 
-// Remove deletes a DB or SSH profile by name (either kind), reporting whether
+// Remove deletes a DB, SSH, or website profile by name, reporting whether
 // anything matched.
 func (c *Config) Remove(name string) bool {
 	name = strings.TrimSpace(name)
@@ -294,6 +301,15 @@ func (c *Config) Remove(name string) bool {
 		sh = append(sh, x)
 	}
 	c.SSHHosts = sh
+	ws := c.WebSites[:0]
+	for _, x := range c.WebSites {
+		if strings.EqualFold(x.Name, name) {
+			removed = true
+			continue
+		}
+		ws = append(ws, x)
+	}
+	c.WebSites = ws
 	return removed
 }
 

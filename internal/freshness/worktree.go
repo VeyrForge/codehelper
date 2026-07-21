@@ -12,8 +12,14 @@ import (
 // import cycle — freshness must not depend on the indexer).
 var worktreeSkipDirs = map[string]bool{
 	".git": true, ".codehelper": true, "node_modules": true, "vendor": true,
-	"target": true, "dist": true, "build": true, "__pycache__": true,
+	"target": true, "obj": true, "dist": true, "build": true, "out": true, "tmp": true,
+	"__pycache__": true,
 	".venv": true, "venv": true, ".idea": true, ".vscode": true,
+	"coverage": true, ".next": true, ".nuxt": true, ".cache": true,
+	".turbo": true, ".parcel-cache": true, ".output": true, ".svelte-kit": true,
+	"storybook-static": true, ".angular": true, ".vercel": true, ".netlify": true,
+	".dart_tool": true, ".gradle": true, ".tox": true, ".nyc_output": true,
+	"site-packages": true,
 }
 
 // worktreeSrcExt is the set of source extensions the indexer parses. Only changes

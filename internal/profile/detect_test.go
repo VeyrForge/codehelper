@@ -202,6 +202,166 @@ func TestGenerateTypeAndVersion(t *testing.T) {
 		}
 	})
 
+	t.Run("nestjs self-named package wins over express dep", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"@nestjs/core","version":"11.1.28","dependencies":{"express":"^5.2.1"}}`)
+		p, _ := Generate(dir)
+		if p.Framework != "nestjs" || p.ProjectType != "nestjs" {
+			t.Errorf("got type=%q framework=%q, want nestjs/nestjs", p.ProjectType, p.Framework)
+		}
+		if p.Versions["nestjs"] != "11.1.28" {
+			t.Errorf("Versions[nestjs]=%q want 11.1.28", p.Versions["nestjs"])
+		}
+	})
+
+	t.Run("nestjs via nest-cli.json", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"my-api","dependencies":{"express":"^4.18.0"}}`)
+		writeFile(t, dir, "nest-cli.json", `{"collection":"@nestjs/schematics"}`)
+		p, _ := Generate(dir)
+		if p.Framework != "nestjs" {
+			t.Errorf("got framework=%q, want nestjs", p.Framework)
+		}
+	})
+
+	t.Run("axum detected from Cargo.toml", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "Cargo.toml", "[package]\nname = \"api\"\nversion = \"0.1.0\"\n\n[dependencies]\naxum = \"0.7\"\ntokio = \"1\"\n")
+		p, _ := Generate(dir)
+		if p.Framework != "axum" {
+			t.Errorf("got framework=%q, want axum", p.Framework)
+		}
+		if p.Versions["axum"] != "0.7" {
+			t.Errorf("Versions[axum]=%q want 0.7", p.Versions["axum"])
+		}
+	})
+
+	t.Run("axum workspace crate itself", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "Cargo.toml", "[workspace]\nmembers = [\"axum\"]\n")
+		writeFile(t, dir, "axum/Cargo.toml", "[package]\nname = \"axum\"\nversion = \"0.8.9\"\nedition = \"2021\"\n")
+		p, _ := Generate(dir)
+		if p.Framework != "axum" {
+			t.Errorf("got framework=%q, want axum", p.Framework)
+		}
+		if p.Versions["axum"] != "0.8.9" {
+			t.Errorf("Versions[axum]=%q want 0.8.9", p.Versions["axum"])
+		}
+	})
+
+	t.Run("sinatra from gemspec", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "Gemfile", "source 'https://rubygems.org'\ngemspec\n")
+		writeFile(t, dir, "sinatra.gemspec", "Gem::Specification.new 'sinatra', '4.0' do |s|\nend\n")
+		writeFile(t, dir, "lib/sinatra.rb", "module Sinatra; end\n")
+		writeFile(t, dir, "VERSION", "4.2.0\n")
+		p, _ := Generate(dir)
+		if p.Framework != "sinatra" {
+			t.Errorf("got framework=%q, want sinatra", p.Framework)
+		}
+		joined := strings.Join(p.Gotchas, "\n")
+		if !strings.Contains(joined, "Sinatra::Base") {
+			t.Errorf("expected sinatra gotcha, got %v", p.Gotchas)
+		}
+	})
+
+	t.Run("vue monorepo via packages/vue", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"vue-monorepo","private":true}`)
+		writeFile(t, dir, "packages/vue/package.json", `{"name":"vue","version":"3.5.0"}`)
+		p, _ := Generate(dir)
+		if p.Framework != "vue" {
+			t.Errorf("got framework=%q, want vue", p.Framework)
+		}
+	})
+
+	t.Run("remix monorepo via @remix-run packages", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"remix-the-web","private":true}`)
+		writeFile(t, dir, "packages/fetch/package.json", `{"name":"@remix-run/fetch","version":"0.5.0"}`)
+		p, _ := Generate(dir)
+		if p.Framework != "remix" {
+			t.Errorf("got framework=%q, want remix", p.Framework)
+		}
+	})
+
+	t.Run("django rest framework from pyproject name", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "pyproject.toml", "[project]\nname = \"djangorestframework\"\ndependencies = [\n  \"django>=4.2\",\n]\n")
+		writeFile(t, dir, "rest_framework/__init__.py", "x = 1\n")
+		p, _ := Generate(dir)
+		if p.Framework != "django-rest-framework" {
+			t.Errorf("got framework=%q, want django-rest-framework", p.Framework)
+		}
+		if p.Versions["django-rest-framework"] != "4.2" && p.Version != "4.2" {
+			// version should be cleaned of trailing quote
+			if strings.Contains(p.Version, `"`) || strings.Contains(p.Versions["django-rest-framework"], `"`) {
+				t.Errorf("version still has quote: version=%q versions=%v", p.Version, p.Versions)
+			}
+		}
+		joined := strings.Join(p.Gotchas, "\n")
+		if !strings.Contains(joined, "APIView") {
+			t.Errorf("expected DRF gotcha, got %v", p.Gotchas)
+		}
+	})
+
+	t.Run("primary language prefers java over css", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "pom.xml", `<project><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter</artifactId></dependency></dependencies></project>`)
+		writeFile(t, dir, "src/Main.java", strings.Repeat("class Main {}\n", 20))
+		writeFile(t, dir, "static/app.css", strings.Repeat("body{}\n", 400))
+		p, _ := Generate(dir)
+		if p.PrimaryLanguage != "java" {
+			t.Errorf("PrimaryLanguage=%q want java (stats=%+v)", p.PrimaryLanguage, p.LanguageStats)
+		}
+	})
+
+	t.Run("phoenix mix.exs overrides node package.json", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"phoenix","version":"1.0.0"}`)
+		writeFile(t, dir, "mix.exs", `defmodule Phoenix.MixProject do
+  use Mix.Project
+  @version "1.9.0-dev"
+  @elixir_requirement "~> 1.15"
+  def project do
+    [app: :phoenix, version: @version, elixir: @elixir_requirement]
+  end
+end
+`)
+		writeFile(t, dir, "lib/phoenix/router.ex", strings.Repeat("defmodule Phoenix.Router do\n  def call(conn, _), do\n    conn\n  end\nend\n", 30))
+		writeFile(t, dir, "assets/js/app.js", "export const x = 1\n")
+		p, err := Generate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ProjectType != "phoenix" {
+			t.Errorf("ProjectType=%q want phoenix", p.ProjectType)
+		}
+		if p.Framework != "phoenix" {
+			t.Errorf("Framework=%q want phoenix", p.Framework)
+		}
+		if p.PrimaryLanguage != "elixir" {
+			t.Errorf("PrimaryLanguage=%q want elixir (stats=%+v)", p.PrimaryLanguage, p.LanguageStats)
+		}
+		joined := strings.Join(p.Gotchas, "\n")
+		if !strings.Contains(joined, "Router") && !strings.Contains(joined, "mix.exs") {
+			t.Errorf("expected phoenix gotcha, got %v", p.Gotchas)
+		}
+	})
+
+	t.Run("plain csharp gotchas are not unity-specific", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "Lib.cs", "namespace N { class C {} }\n")
+		p, _ := Generate(dir)
+		joined := strings.Join(p.Gotchas, "\n")
+		if strings.Contains(joined, "MonoBehaviour") {
+			t.Errorf("unexpected Unity gotcha on plain csharp: %v", p.Gotchas)
+		}
+		if !strings.Contains(joined, "async/await") {
+			t.Errorf("expected general csharp gotcha, got %v", p.Gotchas)
+		}
+	})
+
 	t.Run("wordpress theme detected by style.css header", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, dir, "style.css", "/*\nTheme Name: My Theme\nVersion: 1.4.0\n*/\n")

@@ -54,6 +54,11 @@ type QueryOptions struct {
 	PrimaryLanguage string
 	// LikelyEntrypointFiles lists bootstrap paths under RepoRoot for locate boosts.
 	LikelyEntrypointFiles []string
+	// EnableGraphExpand turns on BM25→1–2 hop graph expand→RRF fusion.
+	// Default off so lexical query/scout ranking stays stable; search_hybrid enables it.
+	EnableGraphExpand bool
+	// GraphExpand overrides hop/seed bounds when graph expansion is enabled.
+	GraphExpand GraphExpandOptions
 }
 
 // Query runs lexical match (backward compatible).
@@ -142,6 +147,15 @@ func QueryHybridWithOptions(ctx context.Context, st *graph.Store, repoID, q stri
 		}
 	}
 
+	// BM25/FTS → 1–2 hop graph expand → RRF fuse. Structural neighbors that never
+	// matched the query text still enter the pool; seeds stay reinforced via RRF.
+	if opts.EnableGraphExpand && len(bm25List) > 0 {
+		graphList := ExpandGraphNeighbors(ctx, st, repoID, bm25List, opts.GraphExpand)
+		if len(graphList) > 0 {
+			bm25List = FuseRRF(bm25List, graphList, 60)
+		}
+	}
+
 	// Load call-graph centrality for ONLY the surviving candidates so rerank can
 	// favor load-bearing symbols. Scoping to the (≤200) candidate IDs instead of
 	// the whole repo's in-degree map keeps this ~constant as the repo grows — the
@@ -161,11 +175,11 @@ func QueryHybridWithOptions(ctx context.Context, st *graph.Store, repoID, q stri
 	}
 
 	fused := rerankWithSignals(bm25List, opts)
-	// Opt-in semantic re-rank (CODEHELPER_EMBED_URL): re-orders the top-N by a
-	// multilingual embedding model so non-English / vague queries find the right
-	// symbols. No-op + zero cost when disabled; fail-safe to lexical on any error.
+	// Opt-in vector channel (CODEHELPER_EMBED_URL): RRF-fuse a cosine-ranked list
+	// with the lexical+graph list when an embedder is active. No-op + zero cost
+	// when disabled; fail-safe to lexical/graph on any error.
 	fused = semanticRerankQuery(q, fused)
-	// Intent-specific boosts run AFTER semantic so embedding re-blend cannot undo
+	// Intent-specific boosts run AFTER semantic so embedding fusion cannot undo
 	// close-verb disambiguation, typo-target routing, or scaffold demotion.
 	fused = applyQueryIntentBoosts(fused, opts)
 	if len(fused) > limit {
@@ -206,6 +220,7 @@ func rerankWithSignals(in []RankedSymbol, opts QueryOptions) []RankedSymbol {
 	// Exact / prefix symbol-name match is the strongest possible signal (this is
 	// what makes name lookups rank #1, matching an LSP/Serena symbol search).
 	wantName := strings.ToLower(strings.Join(toks, ""))
+	recvHint, methodHint, hasQualified := splitQualifiedQuery(intent)
 	// Distinctive query tokens, computed ONCE (not per-candidate) for field weighting.
 	mTokens := meaningfulQueryTokens(toks)
 	// Diff-boost weight, computed ONCE. The +0.25 "recently changed" boost helps
@@ -239,6 +254,19 @@ func rerankWithSignals(in []RankedSymbol, opts QueryOptions) []RankedSymbol {
 				in[i].Reasons = append(in[i].Reasons, "name_prefix")
 			}
 		}
+		// Type.Method / Recv.Method queries: boost the method whose parent/recv
+		// matches (Go stores receiver type name in ParentID).
+		if hasQualified && strings.EqualFold(in[i].Symbol.Name, methodHint) {
+			parent := strings.ToLower(strings.TrimSpace(in[i].Symbol.ParentID))
+			recv := strings.ToLower(recvHint)
+			if parent == recv || strings.HasSuffix(parent, "."+recv) || strings.HasSuffix(parent, recv) {
+				in[i].Score += 0.95
+				in[i].Reasons = append(in[i].Reasons, "qualified_recv")
+			} else if in[i].Symbol.Kind == "method" || in[i].Symbol.Kind == "function" {
+				in[i].Score += 0.35
+				in[i].Reasons = append(in[i].Reasons, "qualified_method")
+			}
+		}
 		if opts.ChangedSymbolIDs != nil {
 			if _, ok := opts.ChangedSymbolIDs[in[i].Symbol.ID]; ok {
 				in[i].Score += diffBoost
@@ -253,6 +281,19 @@ func rerankWithSignals(in []RankedSymbol, opts QueryOptions) []RankedSymbol {
 				in[i].Score += opts.CentralityWeight * math.Log1p(float64(deg))
 				in[i].Reasons = append(in[i].Reasons, "centrality")
 			}
+		}
+		// Hub utilities (log/error/cn/…) are ultra-central but rarely the answer for
+		// a feature/fix kickoff unless the query explicitly names them. Down-weight
+		// so domain symbols surface first in query/scout/kickoff reuse lists.
+		if isHubUtilitySymbol(nm) && !queryNamesHubUtility(toks, nm) {
+			in[i].Score *= 0.45
+			in[i].Reasons = append(in[i].Reasons, "hub_utility_demoted")
+		}
+		// Provider DI lifecycle methods drown HTTP feature kickoffs (Laravel
+		// AppServiceProvider::register vs Form Request / route work).
+		if isProviderLifecycleNoise(in[i].Symbol.Path, in[i].Symbol.Name, toks) {
+			in[i].Score *= 0.35
+			in[i].Reasons = append(in[i].Reasons, "provider_lifecycle_demoted")
 		}
 		// Field weighting: a distinctive query token appearing in the symbol NAME is
 		// stronger evidence than the same token in its path or doc comment. Small,
@@ -308,7 +349,7 @@ func rerankWithSignals(in []RankedSymbol, opts QueryOptions) []RankedSymbol {
 				break
 			}
 		}
-		isTest := strings.Contains(strings.ToLower(filepath.Base(in[i].Symbol.Path)), "test")
+		isTest := pathLooksLikeTest(symPath, in[i].Symbol.Path)
 		if isTest && (intent == "test" || intent == "debug") {
 			in[i].Score += 0.2
 			in[i].Reasons = append(in[i].Reasons, "nearest_test")
@@ -345,7 +386,7 @@ func applyQueryIntentBoosts(in []RankedSymbol, opts QueryOptions) []RankedSymbol
 	}
 	for i := range in {
 		symPath := strings.ToLower(in[i].Symbol.Path)
-		isTest := strings.Contains(strings.ToLower(filepath.Base(in[i].Symbol.Path)), "test")
+		isTest := pathLooksLikeTest(symPath, in[i].Symbol.Path)
 		isScaffold := isScaffoldSymbol(in[i].Symbol.Path, in[i].Symbol.Name)
 		if queryWantsCloseVerb(toks) {
 			nm := strings.ToLower(in[i].Symbol.Name)
@@ -401,7 +442,10 @@ func applyQueryIntentBoosts(in []RankedSymbol, opts QueryOptions) []RankedSymbol
 				in[i].Reasons = append(in[i].Reasons, "crossrepo_demoted")
 			}
 		}
-		if (isTest || isScaffold) && !queryWantsScaffold(toks) && intent != "test" && intent != "debug" {
+		if isTest && !queryWantsScaffold(toks) && intent != "test" && intent != "debug" {
+			in[i].Score *= 0.25
+			in[i].Reasons = append(in[i].Reasons, "test_path_demoted")
+		} else if isScaffold && !queryWantsScaffold(toks) && intent != "test" && intent != "debug" {
 			in[i].Score *= 0.4
 			in[i].Reasons = append(in[i].Reasons, "scaffold_demoted")
 		}
@@ -589,14 +633,35 @@ func candidatesForTokens(ctx context.Context, st *graph.Store, repoID, raw strin
 }
 
 // isScaffoldSymbol reports whether a symbol is non-production scaffolding —
-// database seeders/factories/migrations, fixtures, mocks/stubs — by path segment
-// or name suffix. Such symbols are not reuse targets when implementing a feature.
+// database seeders/factories/migrations, fixtures, mocks/stubs, demos/tutorials —
+// by path segment or name suffix. Such symbols are not reuse targets when
+// implementing a feature.
 func isScaffoldSymbol(path, name string) bool {
 	p := strings.ToLower(path)
-	for _, seg := range []string{"/seeders/", "/seeder/", "/factories/", "/factory/", "/migrations/", "/migration/", "/fixtures/", "/fixture/", "/mocks/", "/stubs/", "/testdata/"} {
+	for _, seg := range []string{
+		"/seeders/", "/seeder/", "/factories/", "/factory/", "/migrations/", "/migration/",
+		"/fixtures/", "/fixture/", "/mocks/", "/stubs/", "/testdata/",
+		"/docs_src/", "/sample/", "/samples/", "/examples/", "/example/",
+		"/integration/", "/_expected/", "/benchmarking/", "/playground/", "/playgrounds/",
+		"/test/", "/tests/", "/__tests__/", "/test/acceptance/", "/acceptance/",
+	} {
 		if strings.Contains(p, seg) {
 			return true
 		}
+	}
+	for _, prefix := range []string{
+		"docs_src/", "sample/", "samples/", "examples/", "example/",
+		"integration/", "fixtures/", "benchmarking/", "playground/", "playgrounds/",
+		"test/", "tests/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(p))
+	if strings.HasPrefix(base, "expected.") || strings.Contains(base, "_expected") ||
+		strings.Contains(base, ".spec.") {
+		return true
 	}
 	n := strings.ToLower(name)
 	for _, suf := range []string{"seeder", "factory", "migration", "mock", "stub", "fake"} {
@@ -605,6 +670,19 @@ func isScaffoldSymbol(path, name string) bool {
 		}
 	}
 	return false
+}
+
+// pathLooksLikeTest reports test/spec trees by path segment or basename.
+func pathLooksLikeTest(symPathLower, rawPath string) bool {
+	if strings.Contains(strings.ToLower(filepath.Base(rawPath)), "test") {
+		return true
+	}
+	p := symPathLower
+	if p == "" {
+		p = strings.ToLower(rawPath)
+	}
+	return strings.Contains(p, "/test/") || strings.Contains(p, "/tests/") ||
+		strings.Contains(p, "/__tests__/") || strings.Contains(p, ".spec.")
 }
 
 // queryIsAboutRanking reports meta-queries about the ranker itself (demote tests,
@@ -699,6 +777,79 @@ func tokenize(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool {
 		return r <= ' ' || r == '_' || r == '/' || r == '.' || r == ':'
 	})
+}
+
+// splitQualifiedQuery extracts Type.Method from an intent string when present.
+// Returns ok=false when no dotted identifier pair is found.
+func splitQualifiedQuery(intent string) (recv, method string, ok bool) {
+	intent = strings.TrimSpace(intent)
+	if intent == "" || !strings.Contains(intent, ".") {
+		return "", "", false
+	}
+	// Prefer the first Identifier.Identifier token (skip package paths like a/b.c).
+	fields := strings.FieldsFunc(intent, func(r rune) bool {
+		return r <= ' ' || r == ',' || r == ';' || r == '(' || r == ')' || r == '[' || r == ']' || r == '"' || r == '\''
+	})
+	for _, f := range fields {
+		f = strings.Trim(f, "`*")
+		if strings.Count(f, ".") != 1 {
+			continue
+		}
+		parts := strings.SplitN(f, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		a, b := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if a == "" || b == "" {
+			continue
+		}
+		if !isIdentToken(a) || !isIdentToken(b) {
+			continue
+		}
+		return a, b, true
+	}
+	return "", "", false
+}
+
+func isIdentToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_') {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// isProviderLifecycleNoise demotes DI container lifecycle methods when the query
+// is about HTTP/forms/routes — a common Laravel kickoff footgun.
+func isProviderLifecycleNoise(path, name string, toks []string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n != "register" && n != "boot" {
+		return false
+	}
+	p := strings.ToLower(filepath.ToSlash(path))
+	if !strings.Contains(p, "provider") {
+		return false
+	}
+	httpish := false
+	for _, t := range toks {
+		switch t {
+		case "form", "request", "requests", "route", "routes", "http", "post", "get",
+			"put", "patch", "delete", "controller", "middleware", "api", "endpoint",
+			"signup", "login", "validation", "validator":
+			httpish = true
+		}
+	}
+	return httpish
 }
 
 // idfForTokens computes a smoothed inverse-document-frequency weight per query
@@ -847,6 +998,42 @@ func pathHintBoost(path string, hints []string) float64 {
 		}
 	}
 	return boost
+}
+
+// hubUtilityNames are ultra-central helpers that pollute kickoff/query relevance
+// when centrality boosts them above domain symbols (log/error/cn in Next/React apps).
+var hubUtilityNames = map[string]struct{}{
+	"log": {}, "logger": {}, "error": {}, "err": {}, "cn": {}, "clsx": {}, "cx": {},
+	"debug": {}, "info": {}, "warn": {}, "fatal": {}, "panic": {}, "assert": {},
+	"print": {}, "println": {}, "sprintf": {}, "printf": {},
+	"twmerge": {}, "tw_merge": {}, "classname": {}, "classnames": {},
+}
+
+func isHubUtilitySymbol(nameLower string) bool {
+	if _, ok := hubUtilityNames[nameLower]; ok {
+		return true
+	}
+	// Common wrappers: logError, logInfo, cnMerge, …
+	for u := range hubUtilityNames {
+		if len(u) >= 2 && (strings.HasPrefix(nameLower, u) || strings.HasSuffix(nameLower, u)) {
+			if len(nameLower) <= len(u)+6 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func queryNamesHubUtility(toks []string, nameLower string) bool {
+	if containsToken(toks, nameLower) {
+		return true
+	}
+	for u := range hubUtilityNames {
+		if containsToken(toks, u) {
+			return true
+		}
+	}
+	return false
 }
 
 // RRF merges two ranked lists by reciprocal rank fusion.

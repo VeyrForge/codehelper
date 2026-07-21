@@ -14,6 +14,8 @@ const (
 	IntentExplain  Intent = "explain"
 	IntentReview   Intent = "review"
 	IntentDeadCode Intent = "dead_code"
+	IntentPerf     Intent = "performance"
+	IntentSecurity Intent = "security"
 )
 
 // Workflow names deterministic investigation chains.
@@ -26,6 +28,8 @@ const (
 	WorkflowExplainCode    Workflow = "explain_code"
 	WorkflowReviewGate     Workflow = "review_gate"
 	WorkflowDeadCodeScan   Workflow = "dead_code_scan"
+	WorkflowPerfAudit      Workflow = "perf_audit"
+	WorkflowSecurityReview Workflow = "security_review"
 )
 
 // Plan is the validated routing output from classification.
@@ -50,8 +54,10 @@ var bugfixTerms = []string{"bug", "broken", "fix", "error", "fail", "crash", "re
 var featureTerms = []string{"add", "implement", "build", "create", "feature", "new", "support"}
 var refactorTerms = []string{"refactor", "rename", "extract", "reorganize", "cleanup", "migrate"}
 var explainTerms = []string{"how does", "how do", "explain", "what is", "what does", "understand", "walk through"}
-var reviewTerms = []string{"review", "audit", "security", "check diff", "ready to merge"}
+var reviewTerms = []string{"review", "audit", "check diff", "ready to merge"}
 var deadCodeTerms = []string{"dead code", "unreferenced", "unused symbol", "never called", "orphan", "unreachable", "not used"}
+var perfTerms = []string{"performance", "perf audit", "hotspot", "hot path", "slow", "latency", "n+1", "optimize speed"}
+var securityTerms = []string{"security review", "vulnerability", "vuln", "injection", "xss", "csrf", "hardcoded secret", "secret scan"}
 
 // ClassifyTask deterministically routes a natural-language task to a workflow.
 func ClassifyTask(task string, constraints Constraints, memoryRules []string) Plan {
@@ -75,6 +81,8 @@ func ClassifyTask(task string, constraints Constraints, memoryRules []string) Pl
 		IntentExplain:  score(explainTerms),
 		IntentReview:   score(reviewTerms),
 		IntentDeadCode: score(deadCodeTerms),
+		IntentPerf:     score(perfTerms),
+		IntentSecurity: score(securityTerms),
 	}
 	best := IntentFeature
 	bestN := 0
@@ -127,6 +135,10 @@ func workflowForIntent(intent Intent) Workflow {
 		return WorkflowReviewGate
 	case IntentDeadCode:
 		return WorkflowDeadCodeScan
+	case IntentPerf:
+		return WorkflowPerfAudit
+	case IntentSecurity:
+		return WorkflowSecurityReview
 	default:
 		return WorkflowFeatureScope
 	}
@@ -231,10 +243,27 @@ func WorkflowSteps(wf Workflow) []workflowStep {
 	case WorkflowDeadCodeScan:
 		return []workflowStep{
 			{Tool: "project_context", Why: "Detect project type and layout", Args: map[string]any{"verbosity": "short"}},
-			{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"limit": 20}},
+			{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"top_k": 20}},
 			{Tool: "scout", Why: "Rank candidates near the task anchor", Args: map[string]any{"limit": 8}},
 			{Tool: "query", Why: "Cross-check dead symbols against search", Args: map[string]any{"top_k": 5}},
 			{Tool: "context", Why: "Inspect top candidate if found", Args: map[string]any{"body": "brief"}},
+		}
+	case WorkflowPerfAudit:
+		return []workflowStep{
+			{Tool: "hotspots", Why: "Rank files by churn × centrality", Args: map[string]any{"top_k": 10}},
+			{Tool: "kickoff", Why: "Orient with performance lens", Args: map[string]any{
+				"role": "performance", "sections": "orient,reuse,steps,decisions,verify",
+			}},
+			{Tool: "query", Why: "Locate symbols on the hot path", Args: map[string]any{"top_k": 6}},
+			{Tool: "impact", Why: "Blast radius before optimizing", Args: map[string]any{"direction": "upstream", "depth": 2}},
+			{Tool: "test_impact", Why: "Tests covering the hot path", Args: map[string]any{}},
+		}
+	case WorkflowSecurityReview:
+		return []workflowStep{
+			{Tool: "detect_changes", Why: "Map changed symbols", Args: map[string]any{}},
+			{Tool: "review_diff", Why: "Line-level security/perf smells on the diff", Args: map[string]any{"include_security": true}},
+			{Tool: "review", Why: "Symbol blast-radius + security_findings", Args: map[string]any{}},
+			{Tool: "diagnostics", Why: "Build/lint status", Args: map[string]any{}},
 		}
 	default:
 		return WorkflowSteps(WorkflowFeatureScope)

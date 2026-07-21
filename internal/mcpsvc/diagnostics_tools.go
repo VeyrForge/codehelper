@@ -2,6 +2,7 @@ package mcpsvc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,14 +27,16 @@ type diagnostic struct {
 }
 
 type diagnosticsResponse struct {
-	Toolchain    string       `json:"toolchain"`
-	Commands     []string     `json:"commands"`
-	OK           bool         `json:"ok"`
-	Problems     []diagnostic `json:"problems"`
-	ProblemCount int          `json:"problem_count"`
-	Truncated    int          `json:"truncated,omitempty"`
-	RawTail      string       `json:"raw_tail,omitempty"`
-	Note         string       `json:"note"`
+	Toolchain       string       `json:"toolchain"`
+	Commands        []string     `json:"commands"`
+	OK              bool         `json:"ok"`
+	Problems        []diagnostic `json:"problems"`
+	ProblemCount    int          `json:"problem_count"`
+	ActionableCount int          `json:"actionable_count,omitempty"`
+	GeneratedCount  int          `json:"generated_count,omitempty"`
+	Truncated       int          `json:"truncated,omitempty"`
+	RawTail         string       `json:"raw_tail,omitempty"`
+	Note            string       `json:"note"`
 }
 
 const maxDiagnostics = 100
@@ -134,12 +137,17 @@ func diagnosticsHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			combined.WriteString("\n")
 		}
 		problems := parseDiagnostics(combined.String())
+		actionable, generated := bucketDiagnostics(problems)
 		out.ProblemCount = len(problems)
-		if len(problems) > maxDiagnostics {
-			out.Truncated = len(problems) - maxDiagnostics
-			problems = problems[:maxDiagnostics]
+		out.ActionableCount = len(actionable)
+		out.GeneratedCount = len(generated)
+		// Surface actionable (app/source) errors first; generated/.next noise last.
+		ordered := append(append([]diagnostic{}, actionable...), generated...)
+		if len(ordered) > maxDiagnostics {
+			out.Truncated = len(ordered) - maxDiagnostics
+			ordered = ordered[:maxDiagnostics]
 		}
-		out.Problems = problems
+		out.Problems = ordered
 
 		switch {
 		case out.OK:
@@ -150,6 +158,12 @@ func diagnosticsHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			out.Note = "checks failed but no file:line problems were parsed — see raw_tail (the tool may be missing, or the failure isn't a compile error)."
 		default:
 			out.Note = "fix the problems above, then re-run diagnostics. Locations are file:line:col from the compiler/vet."
+			if out.GeneratedCount > 0 {
+				out.Note += fmt.Sprintf(
+					" %d problem(s) are in generated/build paths (.next, dist, …) and were sorted after %d actionable source problem(s).",
+					out.GeneratedCount, out.ActionableCount,
+				)
+			}
 		}
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
@@ -248,4 +262,66 @@ func parseDiagnostics(output string) []diagnostic {
 		}
 	}
 	return out
+}
+
+// generatedPathMarkers are path segments that usually mean build/generated output
+// rather than hand-edited source. Diagnostics from these drown actionable errors.
+var generatedPathMarkers = []string{
+	"/.next/", "/.next\\",
+	"/dist/", "/dist\\",
+	"/build/", "/build\\",
+	"/out/", "/out\\",
+	"/tmp/", "/tmp\\",
+	"/coverage/", "/coverage\\",
+	"/.turbo/", "/.turbo\\",
+	"/.parcel-cache/", "/.parcel-cache\\",
+	"/.output/", "/.output\\",
+	"/node_modules/", "/node_modules\\",
+	"/vendor/", "/vendor\\",
+	"/__generated__/", "/__generated__\\",
+	"/.svelte-kit/", "/.svelte-kit\\",
+	"/storybook-static/",
+	"/.vercel/",
+	"/.netlify/",
+	"/.angular/",
+	"/.dart_tool/",
+	"/.nyc_output/",
+}
+
+// isGeneratedDiagnosticPath reports whether file looks like generated/build output.
+func isGeneratedDiagnosticPath(file string) bool {
+	f := filepath.ToSlash(strings.ToLower(file))
+	if !strings.HasPrefix(f, "/") {
+		f = "/" + f
+	}
+	if !strings.HasSuffix(f, "/") {
+		// keep as path for substring checks
+	}
+	for _, m := range generatedPathMarkers {
+		marker := strings.ToLower(filepath.ToSlash(m))
+		if strings.Contains(f, marker) {
+			return true
+		}
+	}
+	// Also catch leading .next/ without a slash prefix in relative paths.
+	base := strings.TrimPrefix(f, "/")
+	for _, prefix := range []string{".next/", "dist/", "build/", "out/", "coverage/", "node_modules/", ".turbo/", ".output/", ".svelte-kit/", "storybook-static/"} {
+		if strings.HasPrefix(base, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// bucketDiagnostics splits problems into actionable (source) vs generated noise.
+// Actionable is returned first so agents fix real errors before drowning in .next.
+func bucketDiagnostics(in []diagnostic) (actionable, generated []diagnostic) {
+	for _, d := range in {
+		if isGeneratedDiagnosticPath(d.File) {
+			generated = append(generated, d)
+		} else {
+			actionable = append(actionable, d)
+		}
+	}
+	return actionable, generated
 }

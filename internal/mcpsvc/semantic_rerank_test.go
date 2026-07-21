@@ -23,7 +23,7 @@ func TestSemanticRerankStatus(t *testing.T) {
 	retrieval.SetEmbedder(fakeEmb{})
 	defer retrieval.SetEmbedder(nil)
 
-	active := []retrieval.RankedSymbol{{Reasons: []string{"bm25", "semantic"}}}
+	active := []retrieval.RankedSymbol{{Reasons: []string{"bm25", "vector"}}}
 	if s := semanticRerankStatus(active); !strings.Contains(s, "active") || !strings.Contains(s, "CONCEPTUAL") {
 		t.Errorf("reranked query should report active + verify reminder, got %q", s)
 	}

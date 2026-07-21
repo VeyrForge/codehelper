@@ -118,9 +118,27 @@ type BrowserOptions struct {
 	AuditFull      bool     // use the full axe-core engine for a11y (vs the lite scan)
 	Actions        []Action // interaction steps to run before capturing
 	Outline        bool     // return a compact map of interactive elements + ready-to-use selectors
+	Snapshot       bool     // return a bounded ARIA/role snapshot (Playwright-MCP style; not a full tree dump)
+	Trace          bool     // include a compact timing/action/debug event trail
+	WaitHydrate    bool     // after load: network idle + DOM stable (SPA/CMS hydration)
 	Headed         bool     // run a VISIBLE browser (default headless) so a human can watch it drive the page
 	SlowMoMS       int      // per-action delay in ms for headed mode (0 = default pacing); also drives the highlight dwell
+	PauseOnFail    bool     // headed: keep the window open briefly after a failed step so a human can see it
+	PauseOnFailMS  int      // override pause duration (0 = default ~3000ms when PauseOnFail)
 	PreviewActions bool     // capture a screenshot after each action step (requires user config)
+	// Session is an optional in-process cookie jar name. Captures that share the
+	// same non-empty Session reuse cookies (e.g. WordPress login → plugins click-
+	// through without re-authenticating). Cleared when SessionClear is true.
+	Session      string
+	SessionClear bool
+	// Upload sandbox: Absolute paths in upload actions must live under WorkspaceRoot
+	// and/or UploadAllowDirs (plus CODEHELPER_BROWSER_UPLOAD_ALLOW). Empty = env only.
+	WorkspaceRoot   string
+	UploadAllowDirs []string
+	// Failure debug pack (disk): WriteDebugPack or DebugPackDir / env enables writing
+	// ~/.codehelper/browser/debug-packs/<stamp>/ on action failure.
+	WriteDebugPack bool
+	DebugPackDir   string
 }
 
 // ActionPreview is one viewport screenshot taken immediately after an interaction
@@ -132,25 +150,44 @@ type ActionPreview struct {
 }
 
 // Action is one interaction step run before the final capture (the "drive the
-// page" capability): click, type, fill, press a key, scroll, hover, wait, or
-// assert. Steps run in order and stop at the first failure (the screenshot then
-// shows where it got stuck), so a flow reads top-to-bottom like a script and
-// the asserts make it a real pass/fail test.
+// page" capability): click, type, fill, select, press, scroll, hover, wait,
+// wait_idle/wait_network, wait_hydrate, navigate, wait_nav, assert, assert_text,
+// upload, snapshot, storage_*, clear_cookies. Steps run in order and stop at the
+// first failure (the screenshot then shows where it got stuck).
+//
+// Locators (prefer over brittle CSS): role+name, testid, text:, or CSS. Selector
+// also accepts prefixes testid:… / role:button:Name / text:… / name:… / css:….
 type Action struct {
-	Do       string `json:"action"`   // click | type | fill | press | scroll | hover | wait | assert
-	Selector string `json:"selector"` // CSS target for click/type/fill/hover/scroll/wait/assert
-	Text     string `json:"text"`     // text for type/fill; for assert: substring the element must contain
-	Key      string `json:"key"`      // key name for press, e.g. Enter, Tab, Escape
+	Do       string `json:"action"`   // see runAction for the full set
+	Selector string `json:"selector"` // CSS or prefixed locator (testid:/role:/text:/name:/css:)
+	Text     string `json:"text"`     // type/fill/select option; URL; assert substring; upload path; storage value
+	Key      string `json:"key"`      // key name for press; storage key for storage_set/get
 	Y        int    `json:"y"`        // pixels for scroll (when no selector)
-	MS       int    `json:"ms"`       // milliseconds for wait (when no selector)
+	MS       int    `json:"ms"`       // milliseconds for wait / wait_nav / wait_idle timeout
+	Role     string `json:"role"`     // ARIA/implicit role locator (button, link, textbox, …)
+	Name     string `json:"name"`     // accessible-name substring (pairs with role, or alone)
+	TestID   string `json:"testid"`   // data-testid / data-test
+	Ref      string `json:"ref"`      // outline ref from a prior/current outline (e.g. e3); also selector=ref:e3
+	// Sensitive marks Text as a secret (e.g. password from connections/secrets).
+	// Action logs redact it; the value is still used at runtime for fill/type.
+	Sensitive bool `json:"-"`
+}
+
+// TraceEvent is one compact debug breadcrumb when Trace is enabled (not a CDP
+// file — LLM-readable timing + what happened).
+type TraceEvent struct {
+	AtMS   int64  `json:"at_ms"`
+	Kind   string `json:"kind"` // navigate|action|wait|heal|fail|hydrate|snapshot
+	Detail string `json:"detail"`
 }
 
 // OutlineElement is one interactive element the agent can drive: a ready-to-use
 // CSS selector (stable id/name/data-testid when available, else a short nth-of-type
 // path) plus enough context — role, accessible name, input type — to decide what to
-// click/fill without pulling the whole DOM into context. This is the opt-in,
-// bounded answer to "what selectors exist on the form I just wrote?".
+// click/fill without pulling the whole DOM into context. Ref (e1, e2, …) is stable
+// for the current page state so actions can use selector=ref:e3 instead of copying CSS.
 type OutlineElement struct {
+	Ref         string `json:"ref"` // e1, e2, … — use as selector "ref:e3" or action ref="e3"
 	Selector    string `json:"selector"`
 	Role        string `json:"role"` // button | link | textbox | checkbox | radio | select | ...
 	Name        string `json:"name"` // accessible name: aria-label, <label>, placeholder, or visible text
@@ -204,28 +241,35 @@ type PerfMetrics struct {
 
 // BrowserResult is everything one capture observed.
 type BrowserResult struct {
-	FinalURL       string           `json:"final_url"`
-	Title          string           `json:"title"`
-	Device         string           `json:"device"`
-	Viewport       string           `json:"viewport"` // "WxH@Sx"
-	DocStatus      int              `json:"doc_status"`
-	Format         string           `json:"format"`
-	MIME           string           `json:"mime"`
-	Image          []byte           `json:"-"`                  // primary screenshot bytes in Format (first tile when split)
-	Tiles          [][]byte         `json:"-"`                  // vertical pieces of a split full-page capture (Image is Tiles[0])
-	PageDim        string           `json:"page_dim,omitempty"` // full content "WxH" when measured
-	Console        []ConsoleMessage `json:"console"`
-	PageErrors     []string         `json:"page_errors"`
-	Failed         []FailedRequest  `json:"failed_requests"`
-	Perf           *PerfMetrics     `json:"perf,omitempty"`
-	Vitals         *Vitals          `json:"vitals,omitempty"`
-	A11y           []A11yIssue      `json:"a11y,omitempty"`
-	Outline        []OutlineElement `json:"outline,omitempty"`         // interactive elements + selectors (when Outline requested)
-	Headed         bool             `json:"headed,omitempty"`          // whether this capture ran in a visible browser
-	ActionLog      []string         `json:"action_log,omitempty"`      // one line per interaction step
-	ActionPreviews []ActionPreview  `json:"action_previews,omitempty"` // viewport shot after each step when enabled
-	Text           string           `json:"text"`
-	LoadMS         int64            `json:"load_ms"`
+	FinalURL       string            `json:"final_url"`
+	Title          string            `json:"title"`
+	Device         string            `json:"device"`
+	Viewport       string            `json:"viewport"` // "WxH@Sx"
+	DocStatus      int               `json:"doc_status"`
+	Format         string            `json:"format"`
+	MIME           string            `json:"mime"`
+	Image          []byte            `json:"-"`                  // primary screenshot bytes in Format (first tile when split)
+	Tiles          [][]byte          `json:"-"`                  // vertical pieces of a split full-page capture (Image is Tiles[0])
+	PageDim        string            `json:"page_dim,omitempty"` // full content "WxH" when measured
+	Console        []ConsoleMessage  `json:"console"`
+	PageErrors     []string          `json:"page_errors"`
+	Failed         []FailedRequest   `json:"failed_requests"`
+	Perf           *PerfMetrics      `json:"perf,omitempty"`
+	Vitals         *Vitals           `json:"vitals,omitempty"`
+	A11y           []A11yIssue       `json:"a11y,omitempty"`
+	Outline        []OutlineElement  `json:"outline,omitempty"`         // interactive elements + selectors (when Outline requested)
+	Snapshot       string            `json:"snapshot,omitempty"`        // bounded ARIA/role tree text (when Snapshot requested)
+	Trace          []TraceEvent      `json:"trace,omitempty"`           // compact debug trail (when Trace requested)
+	Headed         bool              `json:"headed,omitempty"`          // whether this capture ran in a visible browser
+	ActionLog      []string          `json:"action_log,omitempty"`      // one line per interaction step
+	ActionPreviews []ActionPreview   `json:"action_previews,omitempty"` // viewport shot after each step when enabled
+	FailureShot    bool              `json:"failure_shot,omitempty"`    // true when a failed-step screenshot is in ActionPreviews
+	FailurePack    *FailureDebugPack `json:"failure_pack,omitempty"`    // structured debug blob (always filled when actions ran)
+	ScreenshotPath string            `json:"screenshot_path,omitempty"` // on-disk shot when a debug pack / CLI report wrote one
+	DebugPackDir   string            `json:"debug_pack_dir,omitempty"`
+	DebugPackJSON  string            `json:"debug_pack_json,omitempty"`
+	Text           string            `json:"text"`
+	LoadMS         int64             `json:"load_ms"`
 }
 
 // MIMEForFormat returns the image MIME type for a screenshot format.

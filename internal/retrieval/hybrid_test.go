@@ -6,6 +6,24 @@ import (
 	"github.com/VeyrForge/codehelper/pkg/types"
 )
 
+func TestIsHubUtilitySymbol(t *testing.T) {
+	if !isHubUtilitySymbol("cn") || !isHubUtilitySymbol("log") || !isHubUtilitySymbol("error") {
+		t.Fatal("expected cn/log/error as hub utilities")
+	}
+	if isHubUtilitySymbol("buildPersonalityBotPrompt") {
+		t.Fatal("domain symbol should not be hub utility")
+	}
+}
+
+func TestQueryNamesHubUtility(t *testing.T) {
+	if !queryNamesHubUtility([]string{"fix", "the", "logger"}, "log") {
+		t.Fatal("query mentioning logger should allow hub utility")
+	}
+	if queryNamesHubUtility([]string{"add", "oauth", "login"}, "cn") {
+		t.Fatal("unrelated query should not name hub utility")
+	}
+}
+
 func TestRRFMergesBothLists(t *testing.T) {
 	a := []RankedSymbol{{Symbol: types.Symbol{ID: "1", Name: "a"}, Score: 1}}
 	b := []RankedSymbol{{Symbol: types.Symbol{ID: "2", Name: "b"}, Score: 1}}
@@ -58,6 +76,46 @@ func TestDedupeReasons_StripsEmptyAndPreservesOrder(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("at %d: got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestSplitQualifiedQuery(t *testing.T) {
+	recv, method, ok := splitQualifiedQuery("App.Use middleware")
+	if !ok || recv != "App" || method != "Use" {
+		t.Fatalf("got %q.%q ok=%v", recv, method, ok)
+	}
+	if _, _, ok := splitQualifiedQuery("no dots here"); ok {
+		t.Fatal("expected no qualified pair")
+	}
+}
+
+func TestIsProviderLifecycleNoise(t *testing.T) {
+	if !isProviderLifecycleNoise("app/Providers/AppServiceProvider.php", "register", []string{"form", "request", "post"}) {
+		t.Fatal("expected demotion for Form Request task")
+	}
+	if isProviderLifecycleNoise("app/Providers/AppServiceProvider.php", "register", []string{"how", "does", "provider", "bind"}) {
+		t.Fatal("should not demote provider questions")
+	}
+}
+
+func TestHybridRank_QualifiedRecvBoost(t *testing.T) {
+	in := []RankedSymbol{
+		{Symbol: types.Symbol{ID: "1", Name: "App", Kind: "method", ParentID: "DefaultReq", Path: "req.go"}, Score: 0.5},
+		{Symbol: types.Symbol{ID: "2", Name: "Use", Kind: "method", ParentID: "App", Path: "app.go"}, Score: 0.5},
+		{Symbol: types.Symbol{ID: "3", Name: "Use", Kind: "method", ParentID: "Group", Path: "group.go"}, Score: 0.5},
+	}
+	out := rerankWithSignals(in, QueryOptions{Intent: "App.Use middleware", QueryTokens: tokenize("App.Use middleware")})
+	if len(out) == 0 || out[0].Symbol.ID != "2" {
+		t.Fatalf("expected App.Use first, got %#v", out)
+	}
+	found := false
+	for _, r := range out[0].Reasons {
+		if r == "qualified_recv" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected qualified_recv reason, got %v", out[0].Reasons)
 	}
 }
 

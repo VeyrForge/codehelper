@@ -1,6 +1,9 @@
 package helpcatalog
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VeyrForge/codehelper/internal/mcpsvc"
@@ -16,6 +19,28 @@ func TestToolRefsComplete(t *testing.T) {
 	}
 	if len(toolRefs) != len(names) {
 		t.Errorf("toolRefs has %d entries, catalog has %d tools", len(toolRefs), len(names))
+	}
+}
+
+func TestWriteProjectReference(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteProjectReference(dir); err != nil {
+		t.Fatalf("WriteProjectReference: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".codehelper", "MCP_TOOLS.md"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	body := string(b)
+	want := mcpsvc.MCPToolCatalogBrief().Count
+	if !strings.Contains(body, "Tool count:") {
+		t.Fatalf("missing tool count: %s", body[:min(120, len(body))])
+	}
+	if want != 62 {
+		t.Fatalf("catalog count drifted: %d", want)
+	}
+	if !strings.Contains(body, "**kickoff**") && !strings.Contains(body, "- **kickoff**") {
+		t.Fatalf("expected kickoff in generated catalog")
 	}
 }
 

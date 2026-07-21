@@ -2,11 +2,128 @@
 
 ## Unreleased
 
+### Remaining OPEN / residual ceilings
+
+
+- Express library APIs remain self-only inbound (OSS-bed sparsity).
+- Nest monorepo is sample-only (canonical pick is a heuristic).
+- PHP/Ruby symref still thinner than Go/TS on ambiguous names.
+- Godot `_ready` / Unity addon ambiguity at scale.
+
+## 3.0.1
+
+### Added
+
+- **Hybrid retrieval** — BM25/FTS expand 1–2 call/import hops then RRF-fuse; optional embedding channel when `CODEHELPER_EMBED_URL` is set.
+- **ACI facades** — MCP `search_hybrid` and `context_bundle` (bounded source + callers/callees/imports/tests).
+- **Graph provenance** — confidence bands for exact, scoped, name-only, and inferred resolution.
+- **Paired MCP eval** — methodology-lite ON/OFF harness (`scripts/mcp-paired-eval.sh`).
+- **Browser headed/GUI mode** — `headed`/`gui`, `--headed`/`--gui`,
+  `CODEHELPER_BROWSER_HEADED`; optional `slow_mo` + `pause_on_fail`; clear
+  no-display error (xvfb / headed=false). Outline `ref:eN` actions.
+- **Multi-CMS setup suggestions + recipes** — `setup_suggestions` on
+  `project_context` / `kickoff` (propose before first browser run): detect stack
+  (WP/Laravel/Django/Drupal/Magento/SPA), local URL hint, `connections add-site`,
+  headed mode, credentials note, SSH tunnel / GuardURL remote patterns. New
+  recipes `laravel_login`, `django_admin`, `drupal_login`, `magento_login`,
+  `spa_hydrate`; site kinds expanded. Per-project keys: `browser_base_url`,
+  `browser_site`, `browser_recipe`, `browser_headed`, `browser_allow_private`,
+  `test_credentials_note`. `init` / `doctor` print suggestions + sample `.mcp.json`.
+- **Browser failure debug pack** — on assert/action fail, one disk bundle
+  (screenshot + `report.json`: console errors, failed network, outline/snapshot,
+  URL, action log). CLI writes `<out>.report.json`; MCP surfaces pack paths.
+- **Upload sandbox + multi-file** — paths under workspace/`upload_allow`;
+  `||` or newlines for multi-file `SetFiles`.
+- **CMS form eval** — `cms_form.html` + upload/failure-pack harness tasks;
+  Axum/CMS-agnostic `wait_hydrate` landmarks.
+- **Browser agent primitives (rod)** — role/name/testid/text locators with
+  self-heal; actions `select`, `wait_idle`, `wait_hydrate`, `snapshot`,
+  `storage_*`, `clear_cookies`; flags `snapshot`/`trace`/`wait_hydrate`;
+  always-on failure screenshot.
+- **Nest DI depth** — property injection, `@Inject`/`forwardRef`, `@UseGuards`/Pipes/Filters/Interceptors.
+- **Svelte markup/style graph** — component tag `reads` + `<style>` `.class` symbols.
+- **Laravel facade cards** — Hash/Schema/DB/Cache/… beyond Route.
+- **Browser `upload`** — real rod `SetFiles` (selector + filesystem path).
+- **Canonical sample resolve** — bare impact/context picks `sample/01-*` on fixture-only monorepos.
+
+### Fixed
+
+- **`impact` default direction is `upstream`** — bare `impact` answers who-uses-this;
+  class/type hubs self-only on downstream auto-retry upstream once.
+- **Symref `non_fixture`** + hub CSS demotion; doctor WARNs when edge_count ≈ symbol_count.
+- **Express/GDScript/C#/Ruby** denser edges (CJS receivers, class inbound, constant reads).
+
+### Tests
+
+- Impact default + Nest/Svelte/symref/upload/doctor unit coverage; workflow smokes.
+
+### Fixed (earlier)
+
+- **`finish_check` abstain** — shallow/ephemeral beds return structured abstain instead of tool error.
+- **Express / CJS prototypes** — `app.use`, `res.send`, `exports.Router` dotted aliases.
+- **Svelte `ast_query`** — `language=svelte` over extracted `<script>` bodies.
+- **Doctor graph honesty** — WARNs on sparse/contains-only/inventory-only graphs.
+- **Impact on class hubs** — self-only hints for method target or upstream.
+
+### Fixed (earlier)
+
+- **Kotlin symbol names** — tree-sitter Kotlin has no `name` field; extract from
+  sibling `simple_identifier` / `type_identifier` (extension funcs no longer drop).
+- **Elixir modules/defs** — read `arguments` by node type and `alias` module paths
+  (e.g. `Phoenix.Router`); Mix/`mix.exs` overrides Node when both are present.
+- **GDScript call graph** — emit `calls` (+ `preload`/`load` imports) from function
+  bodies so Godot indexes are not contains-only.
+- **Doctor** WARNs when the primary language has 0 symbols or contains-only edges.
+- **Browser tier on PATH** — default rebuilds include `-tags rod`; `doctor` warns when
+  the binary is a stub (`BrowserAvailable()==false`) despite Chromium on disk.
+- **WordPress admin browser recipes** — `recipe=wp_login|wp_admin` + `site=<profile>`
+  fills `#user_login`/`#user_pass`, waits for `#wpadminbar`; passwords from
+  `connections` website profiles (`add-site` + `set-secret` / `env:`) never appear in
+  action logs (`Sensitive` → `***`).
+- **Ruby / Java / C# import + call edges** — `require`/`require_relative`/`load`,
+  `import`, and `using` now emit `imports` edges; Ruby methods get call edges and
+  class/module `ParentID` (Sinatra was contains-only before).
+- **Framework detection** for Sinatra gemspecs, Vue/`packages/vue` monorepos,
+  Remix/`@remix-run/*` workspaces, and Django REST Framework library checkouts.
+- **Primary language** no longer picks CSS/HTML/SQL over real code (Spring Petclinic
+  was reporting `css`).
+- **C# gotchas** are general for non-Unity projects; Unity MonoBehaviour tips only
+  apply when `project_type=unity`.
+- **`cleanVer` / pyproject list parsing** no longer leaves trailing `"` on versions
+  like `django>=4.2`.
+- **`review_diff`** falls back from `HEAD~1` → `HEAD` on shallow (`--depth 1`) clones.
+- **Indexer skip** adds `obj/` (C# intermediates) alongside `target` / `.gradle`.
+
+### Added
+
+- **Svelte SFC graph** — `.svelte` files parse `<script>` / `<script lang="ts">`
+  via the TS/JS extractor (exported funcs/components + script call/import edges);
+  component basename indexed; no longer generic-text fallback.
+- **Rust / Axum graph** — type-use `reads` edges for `type_identifier` / `Type::…`,
+  `implements` for `impl Trait for Type`, and Axum `.route` / `get(handler)`-style
+  handler registration as `calls`; axum workspace crate tagged `framework=axum`.
+- **`connections add-site`** — HTTP/WordPress site profiles (base URL, user,
+  password_ref) for browser recipes; listed secret-free in `project_context`.
+- **Browser QA helpers** — recipes `wp_plugins` / `wp_posts` / `wp_new_post`;
+  actions `navigate`, `wait_nav`, `assert_text`; named `session` cookie jars
+  persisted under `~/.codehelper/browser/sessions/` (reuse login across CLI/MCP
+  process boundaries); report `diagnostics` + **CONSOLE ERRORS** / failed
+  requests (HTTP ≥400).
+- **`db_query` / `db_schema` MySQL** — read-only in-process queries for local/
+  private MySQL (WordPress `wp-config` fixtures), alongside sqlite.
+
+### Tests
+
+- WP login recipe e2e (mock form + `#wpadminbar`); website profile round-trip;
+  password redaction; parser coverage for Ruby/Java/C# imports; profile detection
+  for new stacks; workflow smoke beds extended with `sinatra`, `djangorest`,
+  `spring-petclinic`.
+
 ## Version index
 
-Releases from **3.0.0** through **1.1.0** (newest first):
+Releases from **3.0.1** through **1.1.0** (newest first):
 
-**3.0.0** · **2.59.0** · **2.58.0** · **2.57.0** · **2.56.0** · **2.55.0**
+**3.0.1** · **3.0.0** · **2.59.0** · **2.58.0** · **2.57.0** · **2.56.0** · **2.55.0**
 **2.54.0** · **2.53.0** · **2.52.0** · **2.51.0** · **2.50.0** · **2.49.0**
 **2.48.0** · **2.47.0** · **2.46.0** · **2.45.0** · **2.44.0** · **2.43.0**
 **2.42.18** · **2.42.17** · **2.42.16** · **2.42.15** · **2.42.14** · **2.42.13**

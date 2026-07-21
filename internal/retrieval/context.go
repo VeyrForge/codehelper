@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,10 +17,26 @@ import (
 // ContextBundle is 360-degree view for one symbol.
 type ContextBundle struct {
 	Symbol       *types.Symbol     `json:"symbol"`
+	Source       string            `json:"source,omitempty"`
+	SourceNote   string            `json:"source_note,omitempty"`
 	Callers      []types.Symbol    `json:"callers"`
 	CallersTotal int               `json:"callers_total"` // exact count; Callers may be capped
 	Callees      []types.Reference `json:"callees"`
+	CalleesTotal int               `json:"callees_total,omitempty"`
 	Imports      []types.Reference `json:"imports"`
+	ImportsTotal int               `json:"imports_total,omitempty"`
+	Tests        []types.Symbol    `json:"tests,omitempty"`
+}
+
+// ContextBundleOptions bounds the ACI context_bundle payload.
+type ContextBundleOptions struct {
+	CallerLimit    int
+	CalleeLimit    int
+	ImportLimit    int
+	RepoRoot       string
+	MaxSourceLines int
+	IncludeTests   bool
+	MaxTests       int
 }
 
 type ContextPackItem struct {
@@ -99,8 +116,124 @@ func BuildContextLimited(ctx context.Context, st *graph.Store, repoID, nameOrID 
 	if fileEdges == nil {
 		fileEdges = []types.Reference{}
 	}
-	b := &ContextBundle{Symbol: sym, Callees: out, Callers: callers, CallersTotal: callersTotal, Imports: fileEdges}
+	b := &ContextBundle{
+		Symbol:       sym,
+		Callees:      out,
+		CalleesTotal: len(out),
+		Callers:      callers,
+		CallersTotal: callersTotal,
+		Imports:      fileEdges,
+		ImportsTotal: len(fileEdges),
+	}
 	return b, nil
+}
+
+// BuildContextBundle assembles a bounded ACI payload: source + callers + callees
+// + imports (+ optional nearby tests). Prefer this on the MCP context_bundle path.
+func BuildContextBundle(ctx context.Context, st *graph.Store, repoID, nameOrID string, opts ContextBundleOptions) (*ContextBundle, error) {
+	callerLim := opts.CallerLimit
+	if callerLim <= 0 {
+		callerLim = 24
+	}
+	b, err := BuildContextLimited(ctx, st, repoID, nameOrID, callerLim)
+	if err != nil {
+		return nil, err
+	}
+	calleeLim := opts.CalleeLimit
+	if calleeLim <= 0 {
+		calleeLim = 24
+	}
+	if len(b.Callees) > calleeLim {
+		b.Callees = b.Callees[:calleeLim]
+	}
+	importLim := opts.ImportLimit
+	if importLim <= 0 {
+		importLim = 24
+	}
+	if len(b.Imports) > importLim {
+		b.Imports = b.Imports[:importLim]
+	}
+	if opts.RepoRoot != "" && b.Symbol != nil {
+		maxLines := opts.MaxSourceLines
+		if maxLines <= 0 {
+			maxLines = 40
+		}
+		total := b.Symbol.LineEnd - b.Symbol.LineStart + 1
+		if total > 0 && total <= 80 && maxLines < total {
+			maxLines = total
+		}
+		if maxLines > 400 {
+			maxLines = 400
+		}
+		if src := ReadSymbolSource(opts.RepoRoot, *b.Symbol, maxLines); src != "" {
+			b.Source = src
+			shown := strings.Count(src, "\n") + 1
+			if total > shown {
+				b.SourceNote = fmt.Sprintf("showing first %d of %d lines", shown, total)
+			}
+		}
+	}
+	if opts.IncludeTests && b.Symbol != nil {
+		maxT := opts.MaxTests
+		if maxT <= 0 {
+			maxT = 6
+		}
+		b.Tests = nearbyTestSymbols(ctx, st, repoID, *b.Symbol, maxT)
+	}
+	return b, nil
+}
+
+func nearbyTestSymbols(ctx context.Context, st *graph.Store, repoID string, sym types.Symbol, limit int) []types.Symbol {
+	if limit <= 0 || st == nil {
+		return nil
+	}
+	callers, err := st.CallersOfLimited(ctx, repoID, sym.ID, 80)
+	if err != nil {
+		return nil
+	}
+	out := make([]types.Symbol, 0, limit)
+	seen := map[string]struct{}{}
+	for _, c := range callers {
+		if !pathLooksLikeTest(strings.ToLower(c.Path), c.Path) {
+			continue
+		}
+		if _, ok := seen[c.ID]; ok {
+			continue
+		}
+		seen[c.ID] = struct{}{}
+		out = append(out, c)
+		if len(out) >= limit {
+			return out
+		}
+	}
+	return out
+}
+
+// ReadSymbolSource returns up to maxLines of the symbol's definition from disk.
+func ReadSymbolSource(root string, sym types.Symbol, maxLines int) string {
+	if root == "" || sym.Path == "" || maxLines <= 0 {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(sym.Path)))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	start := sym.LineStart - 1
+	if start < 0 {
+		start = 0
+	}
+	end := sym.LineEnd
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if end-start > maxLines {
+		end = start + maxLines
+	}
+	if start >= len(lines) {
+		return ""
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // ToJSON renders bundle.

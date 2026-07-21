@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/VeyrForge/codehelper/internal/gitutil"
+	"github.com/VeyrForge/codehelper/internal/helpcatalog"
 	"github.com/VeyrForge/codehelper/internal/indexer"
 	"github.com/VeyrForge/codehelper/internal/meta"
 	"github.com/VeyrForge/codehelper/internal/registry"
@@ -67,6 +68,9 @@ func runAnalyze(ctx context.Context, root string, f analyzeFlags) error {
 	}
 	autoEnsureWatchDaemon(root, f.subdir)
 	autoEnsureCodehelperGitignore(root)
+	// Best-effort: keep a generated tool catalog under .codehelper/ for projects
+	// that don't ship docs/MCP_TOOLS.md.
+	_ = helpcatalog.WriteProjectReference(indexRoot)
 	return nil
 }
 

@@ -34,7 +34,9 @@ func orchestrationHandlers(reg *registry.Registry) map[string]server.ToolHandler
 func orchestrationDisabledResult() *mcp.CallToolResult {
 	return mcp.NewToolResultError(
 		"local orchestration is disabled for this project. " +
-			"Enable with `codehelper orchestration enable` or orchestration action=enable.",
+			"Enable with `codehelper orchestration enable` (or the `orchestration` tool with action=enable), " +
+			"then retry. Until enabled, orchestrate / orchestration_memory / orchestration_rerun / " +
+			"orchestration_feedback / run_trace / explain_run will refuse rather than silently no-op.",
 	)
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VeyrForge/codehelper/internal/indexer"
@@ -301,5 +302,32 @@ func TestInsertAtSymbolApplyWritesBlock(t *testing.T) {
 	want := "package x\n\n// a doc comment\nfunc Foo() {\n\tprintln(1)\n}\n"
 	if string(got) != want {
 		t.Fatalf("f.go after insert =\n%q\nwant\n%q", string(got), want)
+	}
+}
+
+func TestWriteWorkspaceFile_RejectsEmptyContent(t *testing.T) {
+	reg, repo, ctx := buildIndexedRepo(t, map[string]string{
+		"go.mod": "module testmod\n\ngo 1.21\n",
+		"a.go":   "package testmod\n\nfunc Ready() {}\n",
+	})
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"repo":    repo.Name,
+		"path":    "empty.txt",
+		"content": "",
+	}
+	res, err := writeWorkspaceFileHandler(reg)(ctx, req)
+	if err != nil {
+		t.Fatalf("handler err: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected error for empty content")
+	}
+	msg := errorText(t, res)
+	if !strings.Contains(msg, "empty") || !strings.Contains(msg, "allow_empty") {
+		t.Fatalf("expected empty/allow_empty guidance, got %q", msg)
+	}
+	if _, err := os.Stat(filepath.Join(repo.RootPath, "empty.txt")); !os.IsNotExist(err) {
+		t.Fatalf("empty file should not have been created")
 	}
 }

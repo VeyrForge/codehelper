@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Codehelper UI fixture — fixed submit</title>
+</head>
+<body>
+  <h1 id="title">Checkout</h1>
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" placeholder="you@example.com"/>
+  <button id="submit" type="button">Place order</button>
+  <div id="status" data-testid="status" role="status"></div>
+  <script>
+    document.getElementById("submit").onclick = function () {
+      var email = document.getElementById("email").value || "";
+      document.getElementById("status").textContent = "Order confirmed for " + email;
+    };
+  </script>
+</body>
+</html>

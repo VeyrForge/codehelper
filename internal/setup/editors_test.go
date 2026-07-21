@@ -43,6 +43,22 @@ func TestProjectMCPWritesBothEditors(t *testing.T) {
 	}
 }
 
+func TestProjectMCPEmptyBinaryUsesResolveBinary(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ProjectMCP(root, ""); err != nil {
+		t.Fatalf("ProjectMCP: %v", err)
+	}
+	ch := readServers(t, filepath.Join(root, ".mcp.json"))["codehelper"].(map[string]any)
+	cmd, _ := ch["command"].(string)
+	if cmd == "" {
+		t.Fatal("expected non-empty command from ResolveBinary")
+	}
+	// Either an absolute path to this test binary or the bare fallback name.
+	if cmd != "codehelper" && !filepath.IsAbs(cmd) {
+		t.Fatalf("command = %q, want absolute path or codehelper", cmd)
+	}
+}
+
 func TestProjectMCPRejectsMalformedConfig(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".mcp.json"), []byte("{not json"), 0o644); err != nil {

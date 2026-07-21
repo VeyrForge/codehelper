@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Codehelper UI fixture — broken submit</title>
+</head>
+<body>
+  <h1 id="title">Checkout</h1>
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" placeholder="you@example.com"/>
+  <button id="submit" type="button">Place order</button>
+  <div id="status" data-testid="status" role="status"></div>
+  <script>
+    // Broken: writes wrong status text (agent must catch via assert, then "fix").
+    document.getElementById("submit").onclick = function () {
+      var email = document.getElementById("email").value || "";
+      document.getElementById("status").textContent = "error: not saved " + email;
+      console.error("checkout failed: stub backend");
+    };
+  </script>
+</body>
+</html>

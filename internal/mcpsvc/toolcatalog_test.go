@@ -7,8 +7,8 @@ import (
 
 func TestMCPToolCatalogComplete(t *testing.T) {
 	names := AllMCPToolNames()
-	if len(names) != 60 {
-		t.Fatalf("expected 60 MCP tools, got %d: %v", len(names), names)
+	if len(names) != 62 {
+		t.Fatalf("expected 62 MCP tools, got %d: %v", len(names), names)
 	}
 	seen := map[string]struct{}{}
 	for _, n := range names {

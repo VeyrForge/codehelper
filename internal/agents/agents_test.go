@@ -64,6 +64,9 @@ func TestWrite_CreatesLearningConfigAndPolicyBlock(t *testing.T) {
 		t.Fatalf("read learning config: %v", err)
 	}
 	cfgContent := string(cfg)
+	if !strings.Contains(cfgContent, "\"enabled\": true") {
+		t.Fatalf("expected learning enabled by default in approval mode, got %q", cfgContent)
+	}
 	if !strings.Contains(cfgContent, "\"project_scoped_only\": true") {
 		t.Fatalf("expected project scoped default, got %q", cfgContent)
 	}
@@ -79,6 +82,9 @@ func TestWrite_CreatesLearningConfigAndPolicyBlock(t *testing.T) {
 	content := string(b)
 	if !strings.Contains(content, "## Local learning loop") {
 		t.Fatalf("expected local learning section in AGENTS.md")
+	}
+	if !strings.Contains(content, "State: enabled") {
+		t.Fatalf("expected learning state enabled in AGENTS.md, got %q", content)
 	}
 	if !strings.Contains(content, "project-only memory") {
 		t.Fatalf("expected project-only memory policy in AGENTS.md")

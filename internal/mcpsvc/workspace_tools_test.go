@@ -224,6 +224,93 @@ func TestTruncationGuard_NewFileAllowed(t *testing.T) {
 	}
 }
 
+func TestUnifyIndentChars_SpacesToTabs(t *testing.T) {
+	sample := "\treturn 1\n"
+	got := unifyIndentChars("    return 2\n", sample)
+	if got != "\treturn 2\n" {
+		t.Fatalf("expected tab indent, got %q", got)
+	}
+}
+
+func TestApplyHunks_ExactMatch_RestylesIndentChars(t *testing.T) {
+	// File + old_string use tabs; agent new_string uses 4 spaces — must restyle to tabs.
+	src := "func f() {\n\treturn 1\n}\n"
+	got, n, fuzzy, err := applyHunks(src, []patchHunk{
+		{OldString: "\treturn 1\n", NewString: "    return 2\n"},
+	})
+	if err != nil || n != 1 || fuzzy != 0 {
+		t.Fatalf("expected exact apply, n=%d fuzzy=%d err=%v", n, fuzzy, err)
+	}
+	if got != "func f() {\n\treturn 2\n}\n" {
+		t.Fatalf("expected tab-styled new_string, got %q", got)
+	}
+}
+
+func TestApplyHunks_ExactFlag_SkipsTolerant(t *testing.T) {
+	src := "func f() {\n\treturn 1\n}\n"
+	_, _, _, err := applyHunks(src, []patchHunk{
+		{OldString: "    return 1\n", NewString: "    return 2\n", Exact: true},
+	})
+	if err == nil {
+		t.Fatalf("expected exact=true to refuse whitespace-only match")
+	}
+	if !strings.Contains(err.Error(), "exact=true") {
+		t.Fatalf("error should mention exact=true, got %v", err)
+	}
+}
+
+func TestApplyHunks_BannerCommentNotRestyled(t *testing.T) {
+	// Regression: dry-run on express banner rewrote " * express" → "    * express".
+	src := "/*!\n * express\n * Copyright\n */\n"
+	got, n, fuzzy, err := applyHunks(src, []patchHunk{
+		{OldString: " * express\n", NewString: " * express-patched\n"},
+	})
+	if err != nil || n != 1 || fuzzy != 0 {
+		t.Fatalf("expected exact apply, n=%d fuzzy=%d err=%v", n, fuzzy, err)
+	}
+	if got != "/*!\n * express-patched\n * Copyright\n */\n" {
+		t.Fatalf("banner indent corrupted: %q", got)
+	}
+}
+
+func TestUnifyIndentChars_PreservesSingleSpaceBanner(t *testing.T) {
+	sample := " * express\n"
+	got := unifyIndentChars(" * express-patched\n", sample)
+	if got != " * express-patched\n" {
+		t.Fatalf("expected single-space preserved, got %q", got)
+	}
+}
+
+func TestAtomicWrite_SizeCheck(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "x.txt")
+	data := []byte("hello world\n")
+	if err := atomicWrite(target, data); err != nil {
+		t.Fatalf("atomic write: %v", err)
+	}
+	st, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != int64(len(data)) {
+		t.Fatalf("size %d want %d", st.Size(), len(data))
+	}
+}
+
+func TestResolveKickoffTask_QueryAlias(t *testing.T) {
+	task, note := resolveKickoffTask(map[string]any{"query": "add oauth login"})
+	if task != "add oauth login" {
+		t.Fatalf("task=%q", task)
+	}
+	if !strings.Contains(note, "task=") {
+		t.Fatalf("expected correction note, got %q", note)
+	}
+	task2, note2 := resolveKickoffTask(map[string]any{"task": "real task", "query": "ignored"})
+	if task2 != "real task" || note2 != "" {
+		t.Fatalf("task should win: task=%q note=%q", task2, note2)
+	}
+}
+
 func TestSnapshotRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	rel := "deep/file.txt"
@@ -342,5 +429,32 @@ func TestRelativePathRejectsTraversal(t *testing.T) {
 	}
 	if _, err := relativePathUnderRepo(dir, "subdir/file.txt"); err != nil {
 		t.Fatalf("legit relative should pass: %v", err)
+	}
+}
+
+func TestResolvePatchHunks_AliasesAndUnifiedDiff(t *testing.T) {
+	hunks, err := resolvePatchHunks(map[string]any{
+		"edits": []any{
+			map[string]any{"old": "a\n", "new": "b\n"},
+		},
+	})
+	if err != nil || len(hunks) != 1 || hunks[0].OldString != "a\n" || hunks[0].NewString != "b\n" {
+		t.Fatalf("edits alias: %#v err=%v", hunks, err)
+	}
+	hunks, err = resolvePatchHunks(map[string]any{
+		"patch": "@@\n line-one\n-line-two\n+line-two-patched\n",
+	})
+	if err != nil {
+		t.Fatalf("unified patch: %v", err)
+	}
+	if len(hunks) != 1 {
+		t.Fatalf("want 1 hunk, got %#v", hunks)
+	}
+	if hunks[0].OldString != "line-one\nline-two\n" || hunks[0].NewString != "line-one\nline-two-patched\n" {
+		t.Fatalf("unexpected unified hunk: old=%q new=%q", hunks[0].OldString, hunks[0].NewString)
+	}
+	_, err = resolvePatchHunks(map[string]any{})
+	if err == nil {
+		t.Fatal("expected error when hunks missing")
 	}
 }

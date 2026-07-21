@@ -5,7 +5,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// ResolveBinary returns an absolute path to the running codehelper binary when
+// possible so generated .mcp.json pins a specific install. Falls back to the
+// bare "codehelper" name for PATH lookup when the executable cannot be resolved.
+func ResolveBinary() string {
+	exe, err := os.Executable()
+	if err != nil || strings.TrimSpace(exe) == "" {
+		return "codehelper"
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil && strings.TrimSpace(resolved) != "" {
+		exe = resolved
+	}
+	if abs, err := filepath.Abs(exe); err == nil {
+		return abs
+	}
+	return exe
+}
 
 // ProjectMCP wires codehelper into the per-project MCP config of the editors that
 // read one from the repo root, so opening the project in Claude Code or Cursor
@@ -16,14 +34,15 @@ import (
 //
 // Each file is merged non-destructively: any other MCP servers already present
 // are preserved and only the "codehelper" entry is added or refreshed. binary is
-// the command clients should launch (use "codehelper" when it is on PATH so the
-// config stays portable/shareable). Returns the paths actually written.
+// the command clients should launch — prefer an absolute path from ResolveBinary
+// so nested workspaces do not pick up a stale PATH install. Returns the paths
+// actually written.
 func ProjectMCP(repoRoot, binary string) ([]string, error) {
 	if repoRoot == "" {
 		return nil, fmt.Errorf("project root is required")
 	}
 	if binary == "" {
-		binary = "codehelper"
+		binary = ResolveBinary()
 	}
 	targets := []string{
 		filepath.Join(repoRoot, ".mcp.json"),

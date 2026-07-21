@@ -81,7 +81,7 @@ var curated = []libEntry{
 	// Python ecosystem.
 	{match: []string{"django"}, docBase: "https://docs.djangoproject.com/en/stable", trust: 9},
 	{match: []string{"flask"}, docBase: "https://flask.palletsprojects.com", trust: 8},
-	{match: []string{"fastapi"}, docBase: "https://fastapi.tiangolo.com", trust: 8},
+	{match: []string{"fastapi"}, docBase: "https://fastapi.tiangolo.com", trust: 8, ecosystem: "pip"},
 	{match: []string{"requests"}, docBase: "https://requests.readthedocs.io/en/latest", trust: 7},
 	{match: []string{"pydantic"}, docBase: "https://docs.pydantic.dev/latest", trust: 8},
 	{match: []string{"numpy"}, docBase: "https://numpy.org/doc/stable", trust: 8},
@@ -435,7 +435,12 @@ func ecosystemFor(docBase string) string {
 		return "go"
 	case strings.Contains(docBase, "docs.rs"):
 		return "cargo"
-	case strings.Contains(docBase, "python.org"), strings.Contains(docBase, "readthedocs"), strings.Contains(docBase, "pydantic"), strings.Contains(docBase, "djangoproject"):
+	case strings.Contains(docBase, "python.org"), strings.Contains(docBase, "readthedocs"),
+		strings.Contains(docBase, "pydantic"), strings.Contains(docBase, "djangoproject"),
+		strings.Contains(docBase, "fastapi.tiangolo"), strings.Contains(docBase, "palletsprojects"),
+		strings.Contains(docBase, "sqlalchemy.org"), strings.Contains(docBase, "pytest.org"),
+		strings.Contains(docBase, "python-poetry.org"), strings.Contains(docBase, "celeryq.dev"),
+		strings.Contains(docBase, "numpy.org"), strings.Contains(docBase, "pandas.pydata"):
 		return "pip"
 	case strings.Contains(docBase, "php.net"), strings.Contains(docBase, "laravel.com"), strings.Contains(docBase, "symfony.com"):
 		return "composer"

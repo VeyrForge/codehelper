@@ -202,6 +202,36 @@ func (s *Store) Counts(ctx context.Context, repoID string) (symbols, edges, file
 	return
 }
 
+// LanguageIndexHealth returns how many symbols exist for language and how many
+// call / import edges leave those symbols. Used by doctor to WARN when the
+// primary language indexed zero symbols, is contains-only, or has a sparse
+// call graph (inventory-only usefulness).
+func (s *Store) LanguageIndexHealth(ctx context.Context, repoID, language string) (symbols, callEdges, importEdges int, err error) {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return 0, 0, 0, nil
+	}
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM symbols WHERE repo_id=? AND language=?`, repoID, language).Scan(&symbols)
+	if err != nil {
+		return
+	}
+	err = s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM edges e
+JOIN symbols s ON s.id = e.src_id
+WHERE e.repo_id=? AND e.kind=? AND s.language=?`,
+		repoID, string(types.RefKindCalls), language).Scan(&callEdges)
+	if err != nil {
+		return
+	}
+	err = s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM edges e
+JOIN symbols s ON s.id = e.src_id
+WHERE e.repo_id=? AND e.kind=? AND s.language=?`,
+		repoID, string(types.RefKindImports), language).Scan(&importEdges)
+	return
+}
+
 // SymbolsByIDs loads symbols for the given ids (order not preserved).
 func (s *Store) SymbolsByIDs(ctx context.Context, repoID string, ids []string) ([]types.Symbol, error) {
 	if len(ids) == 0 {

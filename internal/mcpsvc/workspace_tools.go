@@ -59,29 +59,32 @@ func RegisterWorkspaceTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("read_workspace_file", readWorkspaceFileHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("write_workspace_file",
-		mcp.WithDescription("Replace a file under an indexed repo root (full content). Prefer apply_patch_workspace_file for edits to existing files. Cannot write under .git/, node_modules/, or .env* files. Returns a revert_token usable with revert_workspace_edit."),
+		mcp.WithDescription("Replace a file under an indexed repo root (full content). Prefer apply_patch_workspace_file for edits to existing files. Empty content is refused by default (no 0-byte artifacts); pass allow_empty=true only when intentional. Cannot write under .git/, node_modules/, or .env* files. Returns a revert_token usable with revert_workspace_edit."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Path relative to repo root")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Full new file contents (UTF-8)")),
 		mcp.WithString("repo", mcp.Description("Repository name (optional; defaults to current MCP workspace)")),
 		mcp.WithBoolean("create_directories", mcp.Description("Create parent directories if missing"), mcp.DefaultBool(true)),
 		mcp.WithBoolean("allow_truncate", mcp.Description("Bypass truncation guard (set true only when intentionally shrinking)"), mcp.DefaultBool(false)),
+		mcp.WithBoolean("allow_empty", mcp.Description("Allow writing an empty (0-byte) file"), mcp.DefaultBool(false)),
 		annotWorkspaceWrite(),
 	), timedTool("write_workspace_file", writeWorkspaceFileHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("apply_patch_workspace_file",
-		mcp.WithDescription("Apply one or more search/replace hunks to an existing file. Each old_string must match the current file exactly once unless replace_all is true. If an exact match fails purely on whitespace/indentation (tabs vs spaces, trailing space) AND the snippet anchors to exactly one place, the patch is still applied — new_string is reindented to the file's real style and the response notes whitespace_adjusted. Preserves untouched content verbatim. Returns a unified diff and revert_token."),
+		mcp.WithDescription("Apply one or more search/replace hunks to an existing file. Preferred arg: hunks=[{old_string,new_string,replace_all?,exact?}]. Aliases accepted: edits/changes/replacements, or patch as the same array, or a small unified-diff string with context/-/+ lines. Each old_string must match the current file exactly once unless replace_all is true. If an exact match fails purely on whitespace/indentation (tabs vs spaces, trailing space) AND the snippet anchors to exactly one place, the patch is still applied — new_string is reindented to the file's real style and the response notes whitespace_adjusted. Exact matches also restyle new_string indent chars to the file's tab/space convention. Pass exact=true on a hunk to disable tolerant re-anchoring. Preserves untouched content verbatim. Returns a unified diff and revert_token."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Path relative to repo root")),
 		mcp.WithString("repo", mcp.Description("Repository name (optional; defaults to current MCP workspace)")),
-		mcp.WithArray("hunks", mcp.Required(), mcp.Description("Array of {old_string, new_string, replace_all?:bool}. Applied in order."), mcp.Items(map[string]any{
+		mcp.WithArray("hunks", mcp.Description("Array of {old_string, new_string, replace_all?:bool, exact?:bool}. Applied in order. Aliases: edits, changes, replacements."), mcp.Items(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"old_string":  map[string]any{"type": "string", "description": "Exact text to find in the current file"},
 				"new_string":  map[string]any{"type": "string", "description": "Replacement text"},
 				"replace_all": map[string]any{"type": "boolean", "description": "If true, replace every occurrence; otherwise old_string must appear exactly once"},
+				"exact":       map[string]any{"type": "boolean", "description": "If true, disable whitespace-tolerant re-anchoring for this hunk"},
 			},
 			"required":             []string{"old_string", "new_string"},
 			"additionalProperties": false,
 		})),
+		mcp.WithString("patch", mcp.Description("Optional alias: same as hunks (JSON array) OR a small unified-diff string with context/-/+ lines")),
 		mcp.WithBoolean("dry_run", mcp.Description("If true, do not write; just return the diff that would be produced"), mcp.DefaultBool(false)),
 		annotWorkspaceWrite(),
 	), timedTool("apply_patch_workspace_file", applyPatchWorkspaceFileHandler(regRef)))
@@ -283,6 +286,14 @@ func writeWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if len(content) > maxWriteFileBytes {
 			return mcp.NewToolResultError(fmt.Sprintf("content exceeds max %d bytes", maxWriteFileBytes)), nil
 		}
+		// Never leave 0-byte artifacts: empty content is refused unless the caller
+		// explicitly opts in. This covers both create and overwrite paths.
+		if len(content) == 0 && !argBool(args, "allow_empty", false) {
+			return mcp.NewToolResultError(
+				"refusing write: content is empty (would create a 0-byte file). " +
+					"Pass allow_empty=true only if intentional, or provide non-empty content.",
+			), nil
+		}
 
 		rel, err := relativePathUnderRepo(repo.RootPath, rawPath)
 		if err != nil {
@@ -377,6 +388,9 @@ type patchHunk struct {
 	OldString  string `json:"old_string"`
 	NewString  string `json:"new_string"`
 	ReplaceAll bool   `json:"replace_all,omitempty"`
+	// Exact skips whitespace-tolerant re-anchoring and applies new_string only on a
+	// byte-exact old_string match (still restyles indent chars to the file's style).
+	Exact bool `json:"exact,omitempty"`
 }
 
 func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFunc {
@@ -399,7 +413,7 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 			return mcp.NewToolResultError("writes are blocked for this path (.git, node_modules, or .env*)"), nil
 		}
 
-		hunks, err := decodeHunks(args["hunks"])
+		hunks, err := resolvePatchHunks(args)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -707,17 +721,23 @@ func applyHunks(content string, hunks []patchHunk) (string, int, int, error) {
 			// whitespace, splice new_string in (reindented to the file's real base
 			// indentation). Only the unambiguous single-span case is auto-applied —
 			// anything else falls through to the precise error below.
-			if res, ok := tolerantReplace(cur, h.OldString, h.NewString); ok {
-				cur = res
-				fuzzy++
-				continue
+			if !h.Exact {
+				if res, ok := tolerantReplace(cur, h.OldString, h.NewString); ok {
+					cur = res
+					fuzzy++
+					continue
+				}
 			}
 			hint := "Re-read the file with `read_workspace_file` and copy `old_string` byte-for-byte from the current content " +
 				"(same indentation, same trailing newlines). If indentation uses tabs vs spaces, copy what is actually on disk."
 			reason := "old_string not found in file (matches must be exact, including whitespace and newlines)"
-			if whitespaceInsensitiveContains(cur, h.OldString) {
+			if !h.Exact && whitespaceInsensitiveContains(cur, h.OldString) {
 				reason = "old_string not found EXACTLY, and a whitespace-only match was NOT unique enough to auto-apply (appears 0 or >1 times after normalizing indentation)"
 				hint = "The lines exist but the indentation differs AND the snippet isn't unique. Add 3–5 surrounding lines to old_string so it anchors to exactly one place, then retry."
+			}
+			if h.Exact {
+				reason = "old_string not found (exact=true: whitespace-tolerant match disabled)"
+				hint = "Copy `old_string` byte-for-byte from the file, or omit exact=true to allow indent-tolerant re-anchoring."
 			}
 			return "", 0, 0, &patchHunkError{
 				HunkIndex:   i + 1,
@@ -738,10 +758,13 @@ func applyHunks(content string, hunks []patchHunk) (string, int, int, error) {
 					"or pass `replace_all: true` if you really mean every match.",
 			}
 		}
+		// Preserve the file's tab/space style even on exact matches: agents often
+		// paste new_string with the opposite indent character.
+		newStr := unifyIndentChars(h.NewString, h.OldString)
 		if h.ReplaceAll {
-			cur = strings.ReplaceAll(cur, h.OldString, h.NewString)
+			cur = strings.ReplaceAll(cur, h.OldString, newStr)
 		} else {
-			cur = strings.Replace(cur, h.OldString, h.NewString, 1)
+			cur = strings.Replace(cur, h.OldString, newStr, 1)
 		}
 	}
 	return cur, len(hunks), fuzzy, nil
@@ -788,19 +811,19 @@ func tolerantReplace(cur, oldStr, newStr string) (string, bool) {
 	fileIndent := leadingWS(fileLines[at])
 	oldIndent := leadingWS(oldLines[0])
 	newLines := strings.Split(strings.TrimRight(newStr, "\n"), "\n")
+	// Preserve relative indent; never invent a base indent when the agent's
+	// old_string had none (that rewrote banner " * express" into "    * express").
 	reindented := make([]string, len(newLines))
 	for i, l := range newLines {
-		// Rebase the block onto the file's indentation: strip the old base indent and
-		// prepend the file's real one. Lines not under that base (blank, or shallower)
-		// are left as-is so we never corrupt structure we don't understand.
 		if oldIndent != "" && strings.HasPrefix(l, oldIndent) {
 			reindented[i] = fileIndent + l[len(oldIndent):]
-		} else if oldIndent == "" {
-			reindented[i] = fileIndent + l
 		} else {
 			reindented[i] = l
 		}
 	}
+	// Final pass: ensure indent *characters* match the file line (tabs vs spaces).
+	styled := unifyIndentChars(strings.Join(reindented, "\n"), fileLines[at])
+	reindented = strings.Split(styled, "\n")
 	out := make([]string, 0, len(fileLines)-span+len(reindented))
 	out = append(out, fileLines[:at]...)
 	out = append(out, reindented...)
@@ -863,7 +886,7 @@ func decodeHunks(raw any) ([]patchHunk, error) {
 	}
 	arr, ok := raw.([]any)
 	if !ok {
-		return nil, fmt.Errorf("hunks must be an array")
+		return nil, fmt.Errorf("hunks must be an array of {old_string,new_string} objects (not a unified-diff string). Pass hunks=[{old_string,new_string}] — aliases edits/changes/replacements also work")
 	}
 	out := make([]patchHunk, 0, len(arr))
 	for i, item := range arr {
@@ -872,13 +895,105 @@ func decodeHunks(raw any) ([]patchHunk, error) {
 			return nil, fmt.Errorf("hunks[%d] must be an object", i)
 		}
 		h := patchHunk{
-			OldString:  argMapString(m, "old_string"),
-			NewString:  argMapString(m, "new_string"),
-			ReplaceAll: argMapBool(m, "replace_all", false),
+			OldString:  firstMapString(m, "old_string", "old", "before", "search"),
+			NewString:  firstMapString(m, "new_string", "new", "after", "replace"),
+			ReplaceAll: argMapBool(m, "replace_all", false) || argMapBool(m, "replaceAll", false),
+			Exact:      argMapBool(m, "exact", false),
 		}
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// resolvePatchHunks accepts the canonical `hunks` array plus common LLM aliases
+// (edits/changes/replacements/patch-as-array) and a minimal unified-diff `patch`
+// string (context + -/+ lines without file headers).
+func resolvePatchHunks(args map[string]any) ([]patchHunk, error) {
+	for _, key := range []string{"hunks", "edits", "changes", "replacements", "patches"} {
+		if raw, ok := args[key]; ok && raw != nil {
+			return decodeHunks(raw)
+		}
+	}
+	if raw, ok := args["patch"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case []any:
+			return decodeHunks(v)
+		case string:
+			hunks, err := hunksFromUnifiedDiff(v)
+			if err != nil {
+				return nil, err
+			}
+			return hunks, nil
+		default:
+			return nil, fmt.Errorf("patch must be a hunks array or a unified-diff string")
+		}
+	}
+	return nil, fmt.Errorf("hunks is required (array of {old_string,new_string}); aliases: edits, changes, replacements, or patch")
+}
+
+func firstMapString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s := argMapString(m, k); strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// hunksFromUnifiedDiff parses a simplified unified diff (optional @@ header,
+// lines prefixed with space/-/+) into a single search/replace hunk.
+func hunksFromUnifiedDiff(diff string) ([]patchHunk, error) {
+	diff = strings.ReplaceAll(diff, "\r\n", "\n")
+	diff = strings.TrimSpace(diff)
+	if diff == "" {
+		return nil, fmt.Errorf("patch string is empty; pass hunks=[{old_string,new_string}] instead")
+	}
+	lines := strings.Split(diff, "\n")
+	var oldLines, newLines []string
+	sawChange := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") {
+			continue
+		}
+		if line == "" {
+			// blank lines in diffs are context empties when prefixed; bare blank keep as context
+			oldLines = append(oldLines, "")
+			newLines = append(newLines, "")
+			continue
+		}
+		switch line[0] {
+		case ' ':
+			oldLines = append(oldLines, line[1:])
+			newLines = append(newLines, line[1:])
+		case '-':
+			oldLines = append(oldLines, line[1:])
+			sawChange = true
+		case '+':
+			newLines = append(newLines, line[1:])
+			sawChange = true
+		default:
+			// Treat unprefixed lines as context (LLMs often omit the leading space).
+			oldLines = append(oldLines, line)
+			newLines = append(newLines, line)
+		}
+	}
+	if !sawChange {
+		return nil, fmt.Errorf("patch string has no +/- change lines; use hunks=[{old_string,new_string}]")
+	}
+	oldStr := strings.Join(oldLines, "\n")
+	newStr := strings.Join(newLines, "\n")
+	if oldStr == newStr {
+		return nil, fmt.Errorf("patch produces no change")
+	}
+	// Source files almost always use newline-terminated snippets; add one when
+	// missing so a common LLM unified-diff matches on-disk content.
+	if oldStr != "" && !strings.HasSuffix(oldStr, "\n") {
+		oldStr += "\n"
+	}
+	if newStr != "" && !strings.HasSuffix(newStr, "\n") {
+		newStr += "\n"
+	}
+	return []patchHunk{{OldString: oldStr, NewString: newStr}}, nil
 }
 
 // truncationLooksWrong returns a non-empty reason if a full-content write
@@ -941,7 +1056,9 @@ func isObviouslyTruncatedTail(line string) bool {
 }
 
 // atomicWrite writes via *.tmp + rename for crash safety. On Linux this also
-// gives sane behavior when the target is currently being read.
+// gives sane behavior when the target is currently being read. The temp file is
+// size-checked before rename so a short write never replaces the target with a
+// truncated/empty artifact.
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".codehelper-tmp-*")
@@ -949,25 +1066,161 @@ func atomicWrite(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
+	cleanup := func() {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
+	}
+	n, err := tmp.Write(data)
+	if err != nil {
+		cleanup()
+		return err
+	}
+	if n != len(data) {
+		cleanup()
+		return fmt.Errorf("atomic write short write: wrote %d of %d bytes", n, len(data))
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
 		return err
 	}
 	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
+	st, err := os.Stat(tmpName)
+	if err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if st.Size() != int64(len(data)) {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("atomic write size mismatch: temp has %d bytes, expected %d", st.Size(), len(data))
+	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
 	return nil
+}
+
+// unifyIndentChars restyles leading indentation in newStr to match the tab/space
+// convention of styleSample (typically old_string copied from the file). Relative
+// indent depth is preserved; only the indent character/unit is adapted. Blank
+// lines are left untouched. Decorative one-space prefixes (JSDoc / banner
+// " * comment" lines) are NOT restyled — expanding them to 4 spaces corrupted
+// license headers in dry-run diffs.
+func unifyIndentChars(newStr, styleSample string) string {
+	preferTabs, spaceWidth := indentConvention(styleSample)
+	if !preferTabs && spaceWidth <= 0 {
+		return newStr
+	}
+	lines := strings.Split(newStr, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		ws := leadingWS(line)
+		if ws == "" {
+			continue
+		}
+		// Preserve decorative single-space prefixes (banner / block-comment stars).
+		if !preferTabs && ws == " " {
+			continue
+		}
+		body := line[len(ws):]
+		depth := indentDepth(ws, spaceWidth)
+		if preferTabs {
+			lines[i] = strings.Repeat("\t", depth) + body
+		} else {
+			lines[i] = strings.Repeat(" ", depth*spaceWidth) + body
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// indentConvention inspects styleSample and reports whether it prefers tabs and,
+// for spaces, the indent width (2 or 4). Returns spaceWidth=0 (do not restyle)
+// when the sample only shows decorative 1-space indents or other odd widths that
+// are not a real indent unit.
+func indentConvention(sample string) (preferTabs bool, spaceWidth int) {
+	spaceWidth = 4
+	sawTabs, sawSpaces := false, false
+	minSpaces := 0
+	for _, line := range strings.Split(sample, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		ws := leadingWS(line)
+		if ws == "" {
+			continue
+		}
+		if strings.Contains(ws, "\t") {
+			sawTabs = true
+		}
+		spaces := strings.Count(ws, " ")
+		if spaces > 0 && !strings.Contains(ws, "\t") {
+			sawSpaces = true
+			if minSpaces == 0 || spaces < minSpaces {
+				minSpaces = spaces
+			}
+		}
+	}
+	if sawTabs && !sawSpaces {
+		return true, 4
+	}
+	if sawSpaces {
+		// Only restyle when we see a real indent unit (2 or 4 spaces). A lone
+		// 1-space prefix (banner comments) must not expand to 4 spaces.
+		if minSpaces == 1 {
+			return false, 0
+		}
+		if minSpaces > 0 && minSpaces%2 == 0 && minSpaces <= 8 {
+			spaceWidth = minSpaces
+			if spaceWidth > 4 {
+				spaceWidth = 4
+			}
+			if spaceWidth == 0 {
+				spaceWidth = 4
+			}
+		} else {
+			return false, 0
+		}
+		return false, spaceWidth
+	}
+	if sawTabs {
+		return true, 4
+	}
+	return false, 0
+}
+
+func indentDepth(ws string, spaceWidth int) int {
+	if spaceWidth <= 0 {
+		spaceWidth = 4
+	}
+	depth := 0
+	i := 0
+	for i < len(ws) {
+		if ws[i] == '\t' {
+			depth++
+			i++
+			continue
+		}
+		if ws[i] == ' ' {
+			n := 0
+			for i < len(ws) && ws[i] == ' ' {
+				n++
+				i++
+			}
+			depth += (n + spaceWidth - 1) / spaceWidth
+			continue
+		}
+		break
+	}
+	return depth
 }
 
 func readIfExists(path string) (content []byte, exists bool, err error) {

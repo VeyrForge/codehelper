@@ -17,3 +17,9 @@ func CaptureBrowser(_ context.Context, _ BrowserOptions) (*BrowserResult, error)
 
 // BrowserAvailable reports whether this build includes the browser tier.
 func BrowserAvailable() bool { return false }
+
+// ClearBrowserSession is a no-op when the browser tier is not compiled in.
+func ClearBrowserSession(_ string) {}
+
+// SessionHasCookies is always false without the browser tier.
+func SessionHasCookies(_ string) bool { return false }

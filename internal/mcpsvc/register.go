@@ -37,6 +37,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/review"
 	"github.com/VeyrForge/codehelper/internal/setup"
+	"github.com/VeyrForge/codehelper/internal/setupsuggest"
 	"github.com/VeyrForge/codehelper/internal/verify"
 	"github.com/VeyrForge/codehelper/internal/version"
 	"github.com/VeyrForge/codehelper/pkg/types"
@@ -129,8 +130,8 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("project_context", projectContextHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("query",
-		mcp.WithDescription("Lexical search over the current repo's indexed symbol graph (BM25 + trigrams), not web search. For broad/architecture questions set include_context_pack=true and limit 24-32. Pair hits with context/read_workspace_file before claiming behavior."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
+		mcp.WithDescription("Locate symbols in the indexed graph (BM25/FTS + 1–2 hop graph expand + RRF; optional vector channel) — not web search. Prefer search_hybrid when you also want a package public_api_map. Production/app defs rank above sample/test/fixture/style noise; pass path= on follow-up context/context_bundle/impact when ambiguous. For broad/architecture questions set include_context_pack=true and limit 24-32. Pair hits with context_bundle before claiming behavior. Empty hits → rephrase, ast_query, or analyze."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Symbol name, concept, or natural-language locate task")),
 		mcp.WithString("repo", mcp.Description("Repository name (optional if only one indexed)")),
 		mcp.WithString("intent", mcp.Description("Optional task intent: explore|debug|test|refactor")),
 		mcp.WithNumber("top_k", mcp.Description("Max ranked hits to return (default 10). Lower = fewer tokens, sharper focus."), mcp.DefaultNumber(0)),
@@ -144,7 +145,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("query", queryHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("context",
-		mcp.WithDescription("Full report for ONE symbol in a single call: its definition SOURCE (full for small symbols, truncated for large — pass body=full to lift the cap), signature/doc (what it does), callers, callees, imports, AND the blast_radius (what depends on it + risk tier). Use this after query/scout INSTEAD of read_workspace_file or a separate impact call — one call gives the code, who references it, and what a change would affect. Pass a name or a sym: id."),
+		mcp.WithDescription("Full report for ONE symbol: definition SOURCE, signature/doc, callers, callees, imports, AND blast_radius + risk. Use after query/scout INSTEAD of raw read_workspace_file or a separate impact call. Pass name or sym: id; when names collide (Nest samples, FastAPI docs_src), pass path= to pin the production (or intentional sample) definition."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("REQUIRED — symbol name or sym: id from query (NOT 'symbol'; aliases: symbol, sym, target)")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate when several symbols share the name")),
 		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
@@ -155,11 +156,11 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("context", contextHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("impact",
-		mcp.WithDescription("Blast radius over the call graph. Use before changing, deleting, or renaming a method/variable/class to learn likely callers and must-update files. Prefer upstream for 'who uses this?' questions."),
+		mcp.WithDescription("Blast radius over the call graph before change/delete/rename. Default direction=upstream (who uses this?). Pass direction=downstream for deps. Bare names prefer non-fixture defs; pass path= on sample collisions. Class/type hubs that are self-only on downstream auto-retry upstream. Sparse graphs: do not treat 0 callers as proof of isolation — check confidence / doctor warnings."),
 		mcp.WithString("target", mcp.Required(), mcp.Description("Symbol name or id")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate when several symbols share the name")),
 		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
-		mcp.WithString("direction", mcp.Description("upstream|downstream"), mcp.DefaultString("downstream")),
+		mcp.WithString("direction", mcp.Description("upstream (default: who uses this) | downstream (what this depends on)"), mcp.DefaultString("upstream")),
 		mcp.WithNumber("depth", mcp.Description("Max depth"), mcp.DefaultNumber(2)),
 		mcp.WithBoolean("include_tests", mcp.Description("Include test files in impact nodes"), mcp.DefaultBool(true)),
 		mcp.WithNumber("max_candidates", mcp.Description("Max must-update candidates returned"), mcp.DefaultNumber(8)),
@@ -177,7 +178,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("detect_changes", detectChangesHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("scout",
-		mcp.WithDescription("Before adding/fixing a feature, pre-assemble what already exists: ranked reuse candidates (existing symbols that do something similar, with caller counts so you see what's load-bearing) plus the blast radius and test coverage of the closest match. Use FIRST when implementing — reuse beats reinventing, and you learn what a change would break before writing it."),
+		mcp.WithDescription("Before adding/fixing: ranked reuse candidates (caller counts) + usage_of_top call site + impact_of_top. Production defs beat sample/test/fixture (collision_note when demoted). Use when locating 'what already does X?' — reuse beats reinventing. Then context/change_kit before editing."),
 		mcp.WithString("task", mcp.Required(), mcp.Description("What you want to add or fix, in natural language (e.g. 'parse a git diff into changed symbols')")),
 		mcp.WithNumber("top_k", mcp.Description("Max reuse candidates (default 8)"), mcp.DefaultNumber(0)),
 		mcp.WithString("repo", mcp.Description("Repository name")),
@@ -290,7 +291,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("diagnostics", diagnosticsHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("verify",
-		mcp.WithDescription("Run lint/build/test gates with argv-mode default (no shell), per-command timeout, optional allowlist."),
+		mcp.WithDescription("Run lint/build/test gates with argv-mode default (no shell), per-command timeout, optional allowlist. REQUIRED before finish_check: after a green run set finish_check verify_ran=true; if cmds are missing/ephemeral use verify_abstained=true + verify_reason — never invent a green gate."),
 		mcp.WithString("repo_root", mcp.Required()),
 		mcp.WithString("lint_cmd", mcp.Description("e.g. npm run lint")),
 		mcp.WithString("build_cmd", mcp.Description("e.g. go build ./...")),
@@ -364,8 +365,13 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("web", webHandler()))
 
 	s.AddTool(mcp.NewTool("browser",
-		mcp.WithDescription("Render a URL in headless Chromium and SEE it: returns a WebP screenshot the model can view, plus console output, uncaught JS errors, failed requests, optional performance metrics, and page metadata. Use this (not `web`, which is HTTP-only) for the VISUAL result or client-side JS behavior — verifying a local dev UI (http://localhost:3000) after a change. Write & run a UI test: outline=true lists the interactive elements with ready-to-use selectors, then `actions` clicks/fills/asserts through the flow (pass/fail reported). Responsive check: device=mobile|tablet|desktop, or devices=[\"all\"] to capture every viewport in one call. Performance check: metrics=true (FCP, load, request count, page weight). Watch it happen: headed=true opens a visible browser that highlights each click/input. Lean by default — the opt-in outline is bounded, not a full-DOM dump. Loopback always allowed; set allow_private for LAN. Needs the managed browser: if missing, run `ch browser install` once."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL to open (e.g. http://localhost:3000)")),
+		mcp.WithDescription("Render a URL in headless Chromium and SEE it: returns a WebP screenshot the model can view, plus console output, uncaught JS errors, failed requests, optional performance metrics, and page metadata. Use this (not `web`, which is HTTP-only) for the VISUAL result or client-side JS behavior — verifying a local dev UI (http://localhost:3000) after a change. Write & run a UI test: outline=true lists the interactive elements with ready-to-use selectors, then `actions` clicks/fills/asserts through the flow (pass/fail reported). WordPress admin: recipe=wp_login|wp_admin|wp_plugins|wp_posts|wp_new_post + site=<connections website> fills login from encrypted/env secrets (never logged) and waits for #wpadminbar (plugins/posts navigate after). Session reuse: session=<name> keeps cookies across browser calls in this MCP process. Responsive check: device=mobile|tablet|desktop, or devices=[\"all\"] to capture every viewport in one call. Performance check: metrics=true (FCP, load, request count, page weight). Watch it happen: headed=true opens a visible browser that highlights each click/input. Lean by default — the opt-in outline is bounded, not a full-DOM dump. Loopback always allowed; set allow_private for LAN. Needs the managed browser: if missing, run `ch browser install` once. Binary must be built with -tags rod (default `codehelper update` / install.sh)."),
+		mcp.WithString("url", mcp.Description("URL to open (e.g. http://localhost:3000). Optional when site= is set — then the site login/admin URL is used.")),
+		mcp.WithString("recipe", mcp.Description("Named interaction recipe prepended before actions: wp_login | wp_admin | wp_plugins | wp_posts | wp_new_post | laravel_login | django_admin | drupal_login | magento_login | spa_hydrate. Requires site=. When omitted with site=, uses site kind / project browser_recipe default.")),
+		mcp.WithString("site", mcp.Description("Connections website profile name (codehelper connections add-site). Supplies base URL + user; password from env:/secret store only — never pass passwords in MCP args.")),
+		mcp.WithString("repo", mcp.Description("Repository name for site/secret resolution (optional; defaults to current MCP workspace)")),
+		mcp.WithString("session", mcp.Description("Named in-process cookie jar. Captures sharing the same session reuse auth cookies (e.g. wp_login then open plugins without re-login). Lives for the MCP server process lifetime.")),
+		mcp.WithBoolean("session_clear", mcp.Description("Clear the named session cookie jar before this capture"), mcp.DefaultBool(false)),
 		mcp.WithString("device", mcp.Description("Viewport preset: desktop (1280x800, default) | tablet (768x1024) | mobile (390x844). Sets size, pixel ratio, mobile emulation, and UA.")),
 		mcp.WithArray("devices", mcp.Description("Capture several viewports in one call, e.g. [\"mobile\",\"desktop\"] or [\"all\"]. Overrides `device`. Returns one image per device.")),
 		mcp.WithString("format", mcp.Description("Screenshot format: webp (default, smallest) | png | jpeg")),
@@ -379,20 +385,28 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 		mcp.WithNumber("clip_height", mcp.Description("Height (CSS px) of the clipped region to capture at full width"), mcp.DefaultNumber(0)),
 		mcp.WithBoolean("metrics", mcp.Description("Collect performance metrics: FCP, DOMContentLoaded, load, request count, transfer KB, JS heap"), mcp.DefaultBool(false)),
 		mcp.WithString("audit", mcp.Description("Accessibility + Core Web Vitals audit. 'lite' = fast built-in checks (missing alt/labels/accessible-names, page lang/title); 'full' = the axe-core engine (comprehensive, with impact levels — needs `ch browser install`). Both also report LCP/CLS/FCP/TTFB with good/poor verdicts.")),
-		mcp.WithBoolean("outline", mcp.Description("Return a compact map of the page's INTERACTIVE elements (inputs, buttons, links, form controls) — each with a ready-to-use CSS selector plus role, accessible name, input type, placeholder and value. Use this FIRST on a page you just wrote to discover the exact selectors to drive in `actions`, instead of guessing. Bounded (≤100 elements), not a full-DOM dump."), mcp.DefaultBool(false)),
-		mcp.WithArray("actions", mcp.Description(`Interaction + test steps run in order before the screenshot, e.g. [{"action":"fill","selector":"#email","text":"a@b.com"},{"action":"click","selector":"button[type=submit]"},{"action":"wait","selector":".dashboard"},{"action":"assert","selector":".welcome","text":"Hello"}]. Actions: click|type|fill (selector,text) · press (key: Enter/Tab/Escape/Arrow*) · scroll (selector or y) · hover (selector) · wait (selector or ms) · assert (selector exists, optional text= substring it must contain). Stops at the first failure → TEST FAILED with the failing step; otherwise TEST passed. The screenshot shows where it ended. Tip: run with outline=true first to get the selectors.`)),
-		mcp.WithBoolean("headed", mcp.Description("Run a VISIBLE browser (default headless) so a human can WATCH the agent drive the page: each action flashes a labelled box on its target element and SlowMotion paces the clicks/inputs. Needs a graphical display (skip over SSH/CI). Env CODEHELPER_BROWSER_HEADED=1 sets this as the default without passing it each call."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("outline", mcp.Description("Return a compact map of the page's INTERACTIVE elements (inputs, buttons, links, form controls) — each with a stable ref (e1,e2,…), ready-to-use CSS selector, role, accessible name, input type, placeholder and value. Use this FIRST to discover targets; drive them with selector=ref:e3 or ref=\"e3\". Bounded (≤100 elements), not a full-DOM dump."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("snapshot", mcp.Description("Return a bounded ARIA/role snapshot (Playwright-MCP style: role \"name\" lines, ≤80 nodes). Prefer over dumping HTML. Use with role/name/testid locators in actions."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("trace", mcp.Description("Include a compact timing trail (navigate/action/wait/heal/fail) for debugging flaky flows — not a CDP file."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("wait_hydrate", mcp.Description("After load, wait for network idle + DOM stable (SPA/React/Vue/Next and WP admin hydration). Pair with wait_selector for a ready landmark (#root, #wpadminbar, …)."), mcp.DefaultBool(false)),
+		mcp.WithArray("actions", mcp.Description(`Interaction + test steps before the screenshot. Locators: selector CSS, testid:/role:button:Name/text:/name:/ref:e3 prefixes, or fields role/name/testid/ref. Actions: click|type|fill|select|hover|press|scroll|wait|wait_idle|wait_hydrate|navigate|wait_nav|assert|assert_text|upload|snapshot|storage_set|storage_get|storage_clear|clear_cookies. Example: [{"action":"click","selector":"ref:e3"},{"action":"assert_text","selector":".ok","text":"Thanks"}]. Stops at first failure; failure_pack + screenshot always attached. Tip: outline/snapshot first; session= for login cookies.`)),
+		mcp.WithBoolean("headed", mcp.Description("Run a VISIBLE browser (default headless) so a human can WATCH the agent drive the page: each action flashes a labelled box on its target element and SlowMotion paces the clicks/inputs. Needs a graphical display (skip over SSH/CI — or use xvfb-run). Alias: gui=true. Env CODEHELPER_BROWSER_HEADED=1 or project browser_headed sets the default."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("gui", mcp.Description("Alias for headed=true (visible Chromium)."), mcp.DefaultBool(false)),
 		mcp.WithNumber("slow_mo", mcp.Description("Headed only: delay in ms before each action so clicks/inputs are perceptible (default ~650ms). Ignored in headless."), mcp.DefaultNumber(0)),
-		mcp.WithBoolean("preview_actions", mcp.Description("Return a viewport screenshot after each interaction step (before the final capture). Requires `ch config browser set --action-previews on` (disabled by default)."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("pause_on_fail", mcp.Description("Headed only: keep the window open ~3s after a failed step so a human can see the failure. Env CODEHELPER_BROWSER_PAUSE_ON_FAIL=1."), mcp.DefaultBool(false)),
+		mcp.WithNumber("pause_on_fail_ms", mcp.Description("Headed + pause_on_fail: override pause duration in ms (default 3000)."), mcp.DefaultNumber(0)),
+		mcp.WithBoolean("preview_actions", mcp.Description("Return a viewport screenshot after each interaction step (before the final capture). Requires `ch config browser set --action-previews on` (disabled by default). Failed steps always attach a shot even when this is off."), mcp.DefaultBool(false)),
 		mcp.WithString("baseline", mcp.Description("Visual regression: name a baseline. First call saves the screenshot; later calls return a diff image (changed pixels in red) + % changed. Per-device baselines.")),
 		mcp.WithBoolean("update_baseline", mcp.Description("Overwrite the named baseline with the current screenshot instead of diffing"), mcp.DefaultBool(false)),
 		mcp.WithString("selector", mcp.Description("Screenshot only this CSS-selected element")),
-		mcp.WithString("wait_selector", mcp.Description("Wait for this CSS selector to appear before capturing")),
-		mcp.WithNumber("wait_ms", mcp.Description("Extra fixed wait after load, in milliseconds"), mcp.DefaultNumber(0)),
+		mcp.WithString("wait_selector", mcp.Description("Wait for this CSS selector to appear before capturing (also used as hydrate landmark when wait_hydrate=true)")),
+		mcp.WithNumber("wait_ms", mcp.Description("Extra fixed wait after load, in milliseconds (with wait_hydrate: overall hydrate timeout)"), mcp.DefaultNumber(0)),
 		mcp.WithNumber("timeout_sec", mcp.Description("Overall timeout seconds (default 30)"), mcp.DefaultNumber(0)),
 		mcp.WithBoolean("allow_private", mcp.Description("Permit private/LAN (RFC1918) targets; loopback always allowed, cloud-metadata/link-local always blocked (default false)"), mcp.DefaultBool(false)),
+		mcp.WithString("debug_pack_dir", mcp.Description("On action/assert failure, write a debug pack (failure screenshot + report.json with console errors, failed network, outline/snapshot, URL, action log) to this directory. Default: ~/.codehelper/browser/debug-packs/<timestamp>/.")),
+		mcp.WithString("upload_allow", mcp.Description("Extra upload sandbox roots (os path-list separator). Upload paths must live under the workspace repo root and/or these dirs (also CODEHELPER_BROWSER_UPLOAD_ALLOW). Multi-file: text= path1||path2 or newlines.")),
 		annotVerify(),
-	), timedTool("browser", browserHandler()))
+	), timedTool("browser", browserHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("web_search",
 		mcp.WithDescription("Search the web for current information and return a compact ranked list of {title, url, snippet} to then fetch/verify with the `web` or `browser` tools. Use for finding docs, error messages, library/version facts, or current events — anything outside the indexed repo. Provider is configured via `ch config search` (Tavily/Brave free keys, or keyless DuckDuckGo fallback). Does not crawl; it finds the URLs to look at."),
@@ -443,6 +457,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	RegisterGlossaryTools(s, regRef)
 	RegisterHintsTools(s, regRef)
 	RegisterCompositeTools(s, regRef)
+	RegisterRetrievalFacadeTools(s, regRef)
 	RegisterOpsTools(s, regRef)
 	RegisterOrchestrationTools(s, regRef)
 }
@@ -473,6 +488,7 @@ func toolsOnlyProjectContext(out projectContextMCPResponse) projectContextMCPRes
 		ToolsReferencePath: out.ToolsReferencePath,
 		MCPToolsByGroup:    out.MCPToolsByGroup,
 		CLIONlyTools:       out.CLIONlyTools,
+		WorkflowRecipes:    out.WorkflowRecipes,
 		NextStep:           out.NextStep,
 	}
 }
@@ -693,8 +709,10 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			Surfaces:                projectSurfaces(repo.RootPath, langs, frameworks),
 			Scripts:                 projectScripts(repo.RootPath),
 			SuggestedVerifyCommands: verifyCmds,
-			RecommendedNextTools:    []string{"query", "scout", "context"},
-			NextStep:                "project_context is a one-time BOOTSTRAP — it does not search the code. To answer the request, call `query` (find symbols by name or concept) or `scout` (before adding/changing a feature), then `context`/`trace` for callers and call paths, `change_kit` before editing, and `diagnostics` after. Do NOT stop here or fall back to blindly reading files.",
+			RecommendedNextTools:    []string{"kickoff", "investigate", "query", "scout", "context", "hotspots", "dead_code", "review"},
+			WorkflowRecipes:         FeatureLifecycleRecipes(),
+			VerifyFinishGate:        VerifyFinishGateText,
+			NextStep:                "project_context is a one-time BOOTSTRAP — it does not search the code. Read setup_suggestions and PROPOSE incomplete steps to the user before the first browser run. Pick a workflow_recipes entry (add_feature / remove_feature / locate_symbol / vibe_fix / vibe_ui / programmer_ui / browser_qa / review_changes / security_review / dead_code / performance / architecture_qa), or call `kickoff` (role=architect for design Q&A; default feature/fix) / `investigate` (recipe=architecture|dead_code|security|perf) / `query`→`context`/`change_kit`. UI work: propose setup → implement→browser assert→debug→retest. Obey verify_finish_gate before claiming done. Do NOT stop here or fall back to blindly reading files.",
 			Confidence:              0.95,
 		}
 		if fresh.Stale && fresh.StaleReason != "" {
@@ -709,8 +727,10 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 				Symbols: m.SymbolCount,
 				Edges:   m.EdgeCount,
 			}
+			out.Warnings = append(out.Warnings, indexGraphQualityWarnings(m.SymbolCount, m.EdgeCount)...)
 		}
 		out.Connections = connectionsBriefFor(repo.RootPath)
+		out.SetupSuggestions = buildSetupSuggestions(repo.RootPath, pt, framework, frameworks)
 		out.AgentInstructionFiles = existingAgentInstructionFiles(repo.RootPath)
 		if cfg, cerr := projcfg.Load(repo.RootPath); cerr == nil {
 			enabled := cfg.ToolsEnabled
@@ -729,7 +749,7 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			detailed := projectContextDetailed(args)
 			if hd, herr := hubs.Read(repo.RootPath); herr == nil {
 				// Precomputed at index time — instant, no per-request graph scan.
-				out.Architecture = topPackageDirs(hd.PackageHubs, 3)
+				out.Architecture = topPackageDirs(filterNoisePackageHubs(hd.PackageHubs), 3)
 				if detailed {
 					out.Hubs = formatHubs(hd.SymbolHubs)
 					out.PackageHubs = formatPackageHubs(hd.PackageHubs)
@@ -742,7 +762,7 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 					}
 					if pkgs, e := st.TopPackages(ctx, repo.Name, 6); e == nil {
 						out.PackageHubs = formatPackageHubs(pkgs)
-						out.Architecture = topPackageDirs(pkgs, 3)
+						out.Architecture = topPackageDirs(filterNoisePackageHubs(pkgs), 3)
 					}
 					st.Close()
 				}
@@ -758,7 +778,7 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			full := MCPToolCatalogFull()
 			out.MCPToolsByGroup = full.ByGroup
 			out.CLIONlyTools = full.CLIONly
-			out.Warnings = append(out.Warnings, "minimal-tools mode: tools/list advertises only the main tools ("+strings.Join(MCPMainTools, ", ")+"); every tool in mcp_tools_by_group is still callable by name. Disable with `codehelper config project --minimal off` or unset CODEHELPER_MINIMAL_TOOLS.")
+			out.Warnings = append(out.Warnings, "minimal-tools mode: tools/list advertises the focused lifecycle set ("+strings.Join(MinimalToolSet, ", ")+"); every tool in mcp_tools_by_group is still callable by name. Disable with `codehelper config project --minimal off` or unset CODEHELPER_MINIMAL_TOOLS.")
 		}
 		// Note: reaching here means resolveRepo already matched this repo to the
 		// workspace (by client roots OR spawn CWD) and passed the scope assertion,
@@ -769,14 +789,26 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	}
 }
 
+// buildSetupSuggestions returns LLM-facing setup steps for the detected stack.
+func buildSetupSuggestions(repoRoot, projectType, framework string, frameworks []string) *setupsuggest.Report {
+	conn, _ := connections.Load(repoRoot)
+	pcfg, _ := projcfg.Load(repoRoot)
+	rep := setupsuggest.Build(setupsuggest.Input{
+		RepoRoot:    repoRoot,
+		ProjectType: projectType,
+		Framework:   framework,
+		Frameworks:  frameworks,
+		Connections: conn,
+		Projcfg:     pcfg,
+	})
+	return &rep
+}
+
 // formatHubs renders call-graph hubs as compact "name loc ×callers" strings — a
 // clickable, token-lean "what's linked" list for the detailed bootstrap.
 func formatHubs(hubs []graph.Hub) []string {
 	out := make([]string, 0, len(hubs))
-	for _, h := range hubs {
-		if h.Name == "" {
-			continue
-		}
+	for _, h := range filterNoiseHubs(hubs) {
 		out = append(out, fmt.Sprintf("%s %s:%d ×%d", h.Name, h.Path, h.Line, h.Callers))
 	}
 	return out
@@ -802,10 +834,7 @@ func topPackageDirs(pkgs []graph.PackageHub, n int) []string {
 // architectural "which modules the rest of the code depends on" view.
 func formatPackageHubs(pkgs []graph.PackageHub) []string {
 	out := make([]string, 0, len(pkgs))
-	for _, p := range pkgs {
-		if p.Dir == "" {
-			continue
-		}
+	for _, p := range filterNoisePackageHubs(pkgs) {
 		out = append(out, fmt.Sprintf("%s ×%d ←%d pkgs", p.Dir, p.Callers, p.FromPkgs))
 	}
 	return out
@@ -875,6 +904,8 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if hits == nil {
 			hits = []retrieval.RankedSymbol{}
 		}
+		var demoted int
+		hits, demoted = demoteFixtureHits(hits)
 		// Surface only the top_k hits (default 10), compact by default. Retrieval
 		// kept a larger candidate pool above for context-pack ranking, but dumping
 		// all of it wastes tokens and dilutes the agent's focus (context rot).
@@ -885,6 +916,9 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		detailed := strings.EqualFold(argString(args, "verbosity"), "detailed")
 		surfaced, truncated := capHits(hits, topK)
 		retrievalNote := stdRetrievalNote
+		if note := fixtureCollisionNote(demoted); note != "" {
+			retrievalNote = note + " " + retrievalNote
+		}
 		var fileSnippets []retrieval.FileSnippet
 		if len(surfaced) < 3 {
 			snips, serr := retrieval.SearchFileSnippets(ctx, st, repo.RootPath, repo.Name, strings.Fields(strings.ToLower(q)), 6)
@@ -1301,9 +1335,12 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		target := argFirst(args, "target", "name", "symbol", "sym")
+		dirExplicit := strings.TrimSpace(argString(args, "direction")) != ""
 		dir := argString(args, "direction")
 		if dir == "" {
-			dir = "downstream"
+			// Upstream answers "who uses this?" — the default agents need before edits.
+			// Downstream remains available for "what does this depend on?".
+			dir = "upstream"
 		}
 		depth := int(mcp.ParseInt64(req, "depth", 2))
 		includeTests := true
@@ -1338,6 +1375,19 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		autoRetried := false
+		// Class/type hubs often have no outbound edges; when the caller asked for
+		// (or defaulted into) downstream and got a self-only graph, flip once to
+		// upstream so Nest/Axum-style "blast radius" questions stay useful.
+		if res != nil && len(res.Nodes) <= 1 &&
+			(dir == "downstream" || dir == "callees") &&
+			(sym.Kind == types.SymbolKindClass || sym.Kind == types.SymbolKindInterface || sym.Kind == types.SymbolKindNamespace) {
+			if up, uerr := mcpimpact.Analyze(ctx, st, repo.Name, sym.ID, depth, "upstream"); uerr == nil && up != nil && len(up.Nodes) > 1 {
+				res = up
+				dir = "upstream"
+				autoRetried = true
+			}
+		}
 		if !includeTests {
 			res.Nodes = filterImpactNodesExcludeTests(res.Nodes)
 			res.MustUpdateCandidates = filterImpactNodesExcludeTests(res.MustUpdateCandidates)
@@ -1353,8 +1403,17 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if fresh.Stale {
 			structured.Warning = "index may be stale: " + fresh.StaleReason
 		}
-		if res != nil && len(res.Nodes) <= 1 && len(res.MustUpdateCandidates) == 0 {
+		if autoRetried {
+			if dirExplicit {
+				structured.Note = "downstream was self-only for this class/type hub; auto-retried direction=upstream (who uses it). Pass direction=downstream explicitly only when you need callees/deps."
+			} else {
+				structured.Note = "auto-retried direction=upstream for class/type hub (downstream was self-only)"
+			}
+		} else if res != nil && len(res.Nodes) <= 1 && len(res.MustUpdateCandidates) == 0 {
 			structured.Note = "no impacted nodes beyond the target itself; verify `target` matches a real symbol id from query/context and that the index has cross-file edges"
+			if sym.Kind == types.SymbolKindClass || sym.Kind == types.SymbolKindInterface || sym.Kind == types.SymbolKindNamespace {
+				structured.Note += "; class/type hubs are often self-only while methods carry the edges — try impact on a method, or the opposite direction"
+			}
 		}
 		enrichImpactResponse(&structured, res)
 		return mustToolResultFormatted(structured, resolveFormat(args))
@@ -1449,10 +1508,41 @@ func startsWithUpper(s string) bool {
 }
 
 func likelyPublicSymbol(sym types.Symbol) bool {
-	if startsWithUpper(sym.Name) {
+	name := strings.TrimSpace(sym.Name)
+	if name == "" || strings.HasPrefix(name, "_") {
+		return false
+	}
+	lang := strings.ToLower(sym.Language)
+	p := strings.ToLower(filepath.ToSlash(sym.Path))
+	// Go: exported iff initial uppercase.
+	if lang == "go" || strings.HasSuffix(p, ".go") {
+		return startsWithUpper(name)
+	}
+	// Python / PHP / Ruby: magic methods are public; leading `_` already filtered;
+	// remaining names default private so dead_code can surface unused helpers.
+	if lang == "python" || lang == "php" || lang == "ruby" ||
+		strings.HasSuffix(p, ".py") || strings.HasSuffix(p, ".php") || strings.HasSuffix(p, ".rb") {
+		if strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__") {
+			return true
+		}
+		return false
+	}
+	// JS/TS: PascalCase components/classes and api/public paths are public.
+	if lang == "typescript" || lang == "javascript" ||
+		strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".tsx") ||
+		strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".jsx") {
+		if startsWithUpper(name) {
+			return true
+		}
+		if strings.Contains(p, "/api/") || strings.Contains(p, "/public/") ||
+			strings.HasPrefix(p, "api/") || strings.HasPrefix(p, "public/") {
+			return true
+		}
+		return false
+	}
+	if startsWithUpper(name) {
 		return true
 	}
-	p := strings.ToLower(sym.Path)
 	if strings.Contains(p, "/pkg/") || strings.HasPrefix(p, "pkg/") || strings.HasPrefix(p, "cmd/") {
 		return true
 	}
@@ -1884,29 +1974,63 @@ func currentWorkspaceRepoName(ctx context.Context, reg *registry.Registry) (stri
 // repoNameForRoots matches already-fetched workspace roots against the registry.
 // Split out so the caller can fetch roots once and reuse them (the MCP ListRoots
 // round-trip should not be issued twice within a single tool call).
+//
+// When several registered projects contain the workspace (nested testbeds under
+// an indexed parent), the deepest RootPath wins so agents vibe-code the open
+// project instead of silently answering from the parent graph.
 func repoNameForRoots(reg *registry.Registry, roots []string) (string, string, bool) {
 	if len(roots) == 0 {
 		return "", "", false
 	}
-	var parentMatches []registry.Entry
+	var exact, containing, parent []registry.Entry
+	seenExact, seenContain, seenParent := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	for _, e := range reg.List() {
 		repoRoot := normalizeComparablePath(e.RootPath)
 		for _, root := range roots {
-			if repoRoot == root {
-				return e.Name, "matched_mcp_roots", true
-			}
-			if pathContains(repoRoot, root) {
-				return e.Name, "matched_mcp_roots", true
-			}
-			if pathContains(root, repoRoot) {
-				parentMatches = append(parentMatches, e)
+			switch {
+			case repoRoot == root:
+				if _, ok := seenExact[e.Name]; !ok {
+					seenExact[e.Name] = struct{}{}
+					exact = append(exact, e)
+				}
+			case pathContains(repoRoot, root):
+				if _, ok := seenContain[e.Name]; !ok {
+					seenContain[e.Name] = struct{}{}
+					containing = append(containing, e)
+				}
+			case pathContains(root, repoRoot):
+				if _, ok := seenParent[e.Name]; !ok {
+					seenParent[e.Name] = struct{}{}
+					parent = append(parent, e)
+				}
 			}
 		}
 	}
-	if len(parentMatches) == 1 {
-		return parentMatches[0].Name, "matched_mcp_roots", true
+	if len(exact) > 0 {
+		return pickDeepestEntry(exact).Name, "matched_mcp_roots", true
+	}
+	if len(containing) > 0 {
+		return pickDeepestEntry(containing).Name, "matched_mcp_roots", true
+	}
+	if len(parent) == 1 {
+		return parent[0].Name, "matched_mcp_roots", true
 	}
 	return "", "", false
+}
+
+// pickDeepestEntry returns the registry entry with the longest RootPath (most
+// specific nested project). Ties keep the first entry.
+func pickDeepestEntry(entries []registry.Entry) registry.Entry {
+	best := entries[0]
+	bestLen := len(normalizeComparablePath(best.RootPath))
+	for _, e := range entries[1:] {
+		n := len(normalizeComparablePath(e.RootPath))
+		if n > bestLen {
+			best = e
+			bestLen = n
+		}
+	}
+	return best
 }
 
 func fileURIToPath(raw string) (string, bool) {

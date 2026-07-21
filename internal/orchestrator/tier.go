@@ -29,7 +29,7 @@ func ClassifyTier(plan Plan, task string) TaskTier {
 			return TierDeep
 		}
 	}
-	if plan.Intent == IntentReview || plan.Intent == IntentDeadCode {
+	if plan.Intent == IntentReview || plan.Intent == IntentDeadCode || plan.Intent == IntentPerf || plan.Intent == IntentSecurity {
 		if plan.Confidence >= 0.85 && short {
 			return TierStandard
 		}
@@ -102,15 +102,25 @@ func WorkflowStepsForTier(wf Workflow, tier TaskTier) []workflowStep {
 	case WorkflowDeadCodeScan:
 		if tier == TierFast {
 			return []workflowStep{
-				{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"limit": 15}},
+				{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"top_k": 15}},
 				{Tool: "context", Why: "Inspect top candidate", Args: map[string]any{"body": "brief"}},
 			}
 		}
 		return []workflowStep{
-			{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"limit": 20}},
+			{Tool: "dead_code", Why: "List unreferenced symbols", Args: map[string]any{"top_k": 20}},
 			{Tool: "query", Why: "Cross-check dead symbols against search", Args: map[string]any{"top_k": 5}},
 			{Tool: "context", Why: "Inspect top candidate if found", Args: map[string]any{"body": "brief"}},
 		}
+	case WorkflowPerfAudit:
+		if tier == TierFast {
+			return []workflowStep{
+				{Tool: "hotspots", Why: "Rank files by churn × centrality", Args: map[string]any{"top_k": 8}},
+				{Tool: "impact", Why: "Blast radius of a hot-path symbol", Args: map[string]any{"direction": "upstream", "depth": 2}},
+			}
+		}
+		return WorkflowSteps(wf)
+	case WorkflowSecurityReview:
+		return WorkflowSteps(wf)
 	case WorkflowReviewGate:
 		return WorkflowSteps(wf)
 	default:

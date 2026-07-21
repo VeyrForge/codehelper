@@ -80,13 +80,22 @@ func TestFilterImpactNodesExcludeTests(t *testing.T) {
 }
 
 func TestLikelyPublicSymbol(t *testing.T) {
-	if !likelyPublicSymbol(types.Symbol{Name: "ExportedThing", Path: "internal/x.go"}) {
-		t.Fatalf("expected exported symbol to be considered public")
+	if !likelyPublicSymbol(types.Symbol{Name: "ExportedThing", Path: "internal/x.go", Language: "go"}) {
+		t.Fatalf("expected exported Go symbol to be considered public")
 	}
-	if !likelyPublicSymbol(types.Symbol{Name: "thing", Path: "pkg/api/thing.go"}) {
-		t.Fatalf("expected pkg path symbol to be considered public")
+	if likelyPublicSymbol(types.Symbol{Name: "thing", Path: "pkg/api/thing.go", Language: "go"}) {
+		t.Fatalf("Go lowercase under pkg/ is unexported")
 	}
-	if likelyPublicSymbol(types.Symbol{Name: "thing", Path: "internal/x.go"}) {
+	if likelyPublicSymbol(types.Symbol{Name: "thing", Path: "internal/x.go", Language: "go"}) {
 		t.Fatalf("unexpected internal lowercase symbol considered public")
+	}
+	if likelyPublicSymbol(types.Symbol{Name: "helper", Path: "app/utils.py", Language: "python"}) {
+		t.Fatalf("python helpers default private for dead_code filtering")
+	}
+	if !likelyPublicSymbol(types.Symbol{Name: "Button", Path: "src/ui/Button.tsx", Language: "typescript"}) {
+		t.Fatalf("PascalCase TS component should be public")
+	}
+	if likelyPublicSymbol(types.Symbol{Name: "formatDate", Path: "src/lib/dates.ts", Language: "typescript"}) {
+		t.Fatalf("camelCase TS helper should not be treated as public API")
 	}
 }

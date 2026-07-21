@@ -64,7 +64,7 @@ func repairAllProjects() {
 		if err := setup.WriteClientRules(root); err != nil {
 			fmt.Fprintf(os.Stderr, "repair: %s — client rules: %v\n", p.Name, err)
 		}
-		if _, err := setup.ProjectMCP(root, "codehelper"); err != nil {
+		if _, err := setup.ProjectMCP(root, setup.ResolveBinary()); err != nil {
 			fmt.Fprintf(os.Stderr, "repair: %s — MCP config: %v\n", p.Name, err)
 		}
 		_, _ = setup.ClaudeCodeEnable(root, "codehelper")

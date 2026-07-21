@@ -176,6 +176,7 @@ func configBrowserCmd() *cobra.Command {
 func configProjectCmd() *cobra.Command {
 	var toolsFlag, trackFlag, minimalFlag string
 	var verifyCwd, verifyBuild, verifyTest, verifyLint string
+	var browserBaseURL, browserSite, browserRecipe, testCredsNote, browserHeaded, browserAllowPrivate string
 	c := &cobra.Command{
 		Use:   "project [path]",
 		Short: "Show or set per-project MCP tools on/off and telemetry level",
@@ -195,6 +196,12 @@ With no flags it prints the effective config. Flags:
   --verify-build CMD   override build command for verify
   --verify-test CMD    override test command for verify
   --verify-lint CMD    override lint command for verify
+  --browser-base-url   default local/remote HTTP base for setup suggestions
+  --browser-site       default connections website name for browser site=
+  --browser-recipe     default browser recipe (wp_login|laravel_login|…)
+  --browser-headed on|off   default headed mode for browser tool
+  --browser-allow-private on|off   default allow_private for LAN URLs
+  --test-credentials-note   where test logins live (never a password)
 
 Toggling takes effect on the running MCP server without a restart.`,
 		Args: cobra.MaximumNArgs(1),
@@ -202,6 +209,9 @@ Toggling takes effect on the running MCP server without a restart.`,
 			return applyProjectConfig(os.Stdout, projectConfigEdit{
 				path: argPath(args), tools: toolsFlag, track: trackFlag, minimal: minimalFlag,
 				verifyCwd: verifyCwd, verifyBuild: verifyBuild, verifyTest: verifyTest, verifyLint: verifyLint,
+				browserBaseURL: browserBaseURL, browserSite: browserSite, browserRecipe: browserRecipe,
+				browserHeaded: browserHeaded, browserAllowPrivate: browserAllowPrivate,
+				testCredentialsNote: testCredsNote,
 			})
 		},
 	}
@@ -212,6 +222,12 @@ Toggling takes effect on the running MCP server without a restart.`,
 	c.Flags().StringVar(&verifyBuild, "verify-build", "", "build command override for verify")
 	c.Flags().StringVar(&verifyTest, "verify-test", "", "test command override for verify")
 	c.Flags().StringVar(&verifyLint, "verify-lint", "", "lint command override for verify")
+	c.Flags().StringVar(&browserBaseURL, "browser-base-url", "", "default browser base URL hint")
+	c.Flags().StringVar(&browserSite, "browser-site", "", "default connections website name")
+	c.Flags().StringVar(&browserRecipe, "browser-recipe", "", "default browser recipe name")
+	c.Flags().StringVar(&browserHeaded, "browser-headed", "", "on|off — default headed browser")
+	c.Flags().StringVar(&browserAllowPrivate, "browser-allow-private", "", "on|off — default allow_private")
+	c.Flags().StringVar(&testCredsNote, "test-credentials-note", "", "where test credentials live (not a password)")
 	return c
 }
 
@@ -220,14 +236,20 @@ Toggling takes effect on the running MCP server without a restart.`,
 // shown. It is the single shape shared by `config project` and the top-level
 // `codehelper --no-tools/--tools/--track` shortcut.
 type projectConfigEdit struct {
-	path        string // repo path (or subdir); "" → "."
-	tools       string // "", on|off (parseOnOff spellings)
-	track       string // "", off|summary
-	minimal     string // "", on|off (parseOnOff spellings)
-	verifyCwd   string
-	verifyBuild string
-	verifyTest  string
-	verifyLint  string
+	path                string // repo path (or subdir); "" → "."
+	tools               string // "", on|off (parseOnOff spellings)
+	track               string // "", off|summary
+	minimal             string // "", on|off (parseOnOff spellings)
+	verifyCwd           string
+	verifyBuild         string
+	verifyTest          string
+	verifyLint          string
+	browserBaseURL      string
+	browserSite         string
+	browserRecipe       string
+	browserHeaded       string // "", on|off
+	browserAllowPrivate string // "", on|off
+	testCredentialsNote string
 }
 
 // applyProjectConfig resolves the project, applies the edit, persists it when
@@ -292,6 +314,38 @@ func applyProjectConfig(w io.Writer, edit projectConfigEdit) error {
 		cfg.VerifyLint = strings.TrimSpace(edit.verifyLint)
 		changed = true
 	}
+	if edit.browserBaseURL != "" {
+		cfg.BrowserBaseURL = strings.TrimSpace(edit.browserBaseURL)
+		changed = true
+	}
+	if edit.browserSite != "" {
+		cfg.BrowserSite = strings.TrimSpace(edit.browserSite)
+		changed = true
+	}
+	if edit.browserRecipe != "" {
+		cfg.BrowserRecipe = strings.TrimSpace(edit.browserRecipe)
+		changed = true
+	}
+	if edit.testCredentialsNote != "" {
+		cfg.TestCredentialsNote = strings.TrimSpace(edit.testCredentialsNote)
+		changed = true
+	}
+	if edit.browserHeaded != "" {
+		on, err := parseOnOff(edit.browserHeaded)
+		if err != nil {
+			return fmt.Errorf("--browser-headed must be on or off, got %q", edit.browserHeaded)
+		}
+		cfg.BrowserHeaded = &on
+		changed = true
+	}
+	if edit.browserAllowPrivate != "" {
+		on, err := parseOnOff(edit.browserAllowPrivate)
+		if err != nil {
+			return fmt.Errorf("--browser-allow-private must be on or off, got %q", edit.browserAllowPrivate)
+		}
+		cfg.BrowserAllowPrivate = &on
+		changed = true
+	}
 
 	if changed {
 		if err := projcfg.Save(repoRoot, cfg); err != nil {
@@ -300,17 +354,28 @@ func applyProjectConfig(w io.Writer, edit projectConfigEdit) error {
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(map[string]any{
-		"path":          projcfg.Path(repoRoot),
-		"repo_root":     repoRoot,
-		"tools_enabled": cfg.ToolsEnabled,
-		"minimal_tools": cfg.MinimalTools,
-		"track":         cfg.Track,
-		"verify_cwd":    cfg.VerifyCwd,
-		"verify_build":  cfg.VerifyBuild,
-		"verify_test":   cfg.VerifyTest,
-		"verify_lint":   cfg.VerifyLint,
-	})
+	out := map[string]any{
+		"path":                  projcfg.Path(repoRoot),
+		"repo_root":             repoRoot,
+		"tools_enabled":         cfg.ToolsEnabled,
+		"minimal_tools":         cfg.MinimalTools,
+		"track":                 cfg.Track,
+		"verify_cwd":            cfg.VerifyCwd,
+		"verify_build":          cfg.VerifyBuild,
+		"verify_test":           cfg.VerifyTest,
+		"verify_lint":           cfg.VerifyLint,
+		"browser_base_url":      cfg.BrowserBaseURL,
+		"browser_site":          cfg.BrowserSite,
+		"browser_recipe":        cfg.BrowserRecipe,
+		"test_credentials_note": cfg.TestCredentialsNote,
+	}
+	if cfg.BrowserHeaded != nil {
+		out["browser_headed"] = *cfg.BrowserHeaded
+	}
+	if cfg.BrowserAllowPrivate != nil {
+		out["browser_allow_private"] = *cfg.BrowserAllowPrivate
+	}
+	return enc.Encode(out)
 }
 
 // argPath returns the first positional path arg, or "." when none was given.

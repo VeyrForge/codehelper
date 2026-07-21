@@ -149,11 +149,22 @@ func (h *httpEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 // modest batch per query regardless of repo size.
 const semanticTopN = 80
 
-// semanticRerankQuery re-orders the lexical top-N by embedding similarity to the
-// query. One batched embed call; bounded to semanticTopN; fail-safe to lexical.
+// semanticRerankQuery RRF-fuses the lexical(+graph) list with a vector-ranked
+// channel when an embedder is active. One batched embed call; bounded to
+// semanticTopN; fail-safe to the input list on any error / unset URL.
 func semanticRerankQuery(query string, ranked []RankedSymbol) []RankedSymbol {
-	if activeEmbedder == nil || len(ranked) == 0 || strings.TrimSpace(query) == "" {
+	vecList := semanticVectorList(query, ranked)
+	if len(vecList) == 0 {
 		return ranked
+	}
+	return FuseRRF(ranked, vecList, 60)
+}
+
+// semanticVectorList embeds the query + top-N candidates and returns them ranked
+// by min-max-normalized cosine similarity (reason "vector").
+func semanticVectorList(query string, ranked []RankedSymbol) []RankedSymbol {
+	if activeEmbedder == nil || len(ranked) == 0 || strings.TrimSpace(query) == "" {
+		return nil
 	}
 	n := len(ranked)
 	if n > semanticTopN {
@@ -166,7 +177,7 @@ func semanticRerankQuery(query string, ranked []RankedSymbol) []RankedSymbol {
 	}
 	vecs, err := activeEmbedder.EmbedBatch(texts)
 	if err != nil || len(vecs) < n+1 || len(vecs[0]) == 0 {
-		return ranked // embed server down / bad response → keep lexical, never break a query
+		return nil
 	}
 	qv := vecs[0]
 	sims := make([]float64, n)
@@ -183,20 +194,19 @@ func semanticRerankQuery(query string, ranked []RankedSymbol) []RankedSymbol {
 			}
 		}
 	}
-	// Embedding cosines bunch into a narrow band (e.g. 0.74–0.84), so the real
-	// ranking signal is in the SPREAD, not the absolute value. Min-max normalize
-	// across this candidate set so the best match gets a full boost and the worst
-	// gets none — otherwise the 0.4 blend is swamped by lexical noise.
+	out := make([]RankedSymbol, 0, n)
 	for i := 0; i < n; i++ {
 		ns := 0.0
 		if hi > lo {
 			ns = (sims[i] - lo) / (hi - lo)
 		}
-		ranked[i].Score = ranked[i].Score*0.55 + ns*0.45
-		ranked[i].Reasons = append(ranked[i].Reasons, "semantic")
+		rs := ranked[i]
+		rs.Score = ns
+		rs.Reasons = []string{"vector"}
+		out = append(out, rs)
 	}
-	sort.SliceStable(ranked, func(i, j int) bool { return rankedLess(ranked[i], ranked[j]) })
-	return ranked
+	sort.SliceStable(out, func(i, j int) bool { return rankedLess(out[i], out[j]) })
+	return out
 }
 
 // candidateText is what we embed for a symbol. A bare identifier ("compute_expert")

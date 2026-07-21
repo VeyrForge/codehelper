@@ -69,6 +69,9 @@ var astLanguages = map[string]func() *sitter.Language{
 	"terraform":  hcl.GetLanguage,
 	"protobuf":   protobuf.GetLanguage,
 	"proto":      protobuf.GetLanguage,
+	// Svelte SFCs have no dedicated grammar here — map to the TSX/JS grammar and
+	// scan extracted <script> bodies (see ScanFile svelte mode).
+	"svelte": tsx.GetLanguage,
 }
 
 // astExtensions maps a language name to the file extensions it should scan, so
@@ -94,6 +97,12 @@ var astExtensions = map[string][]string{
 	"bash":       {".sh", ".bash"},
 	"hcl":        {".tf", ".tfvars", ".hcl"},
 	"protobuf":   {".proto"},
+	"svelte":     {".svelte"},
+}
+
+// CanonicalASTLanguage resolves an alias to its canonical language name, or "" if unsupported.
+func CanonicalASTLanguage(name string) string {
+	return canonicalLang(name)
 }
 
 // canonicalLang resolves an alias to its canonical language name (the key used
@@ -127,6 +136,8 @@ func canonicalLang(name string) string {
 		return "hcl"
 	case "proto":
 		return "protobuf"
+	case "svelte", "sveltekit":
+		return "svelte"
 	}
 	if _, ok := astExtensions[name]; ok {
 		return name
@@ -173,17 +184,19 @@ const astSnippetCap = 240 // keep captured text token-cheap
 // reallocating C resources per file. Construct once, ScanFile in a loop, Close
 // when done. Not safe for concurrent use (one parser/cursor).
 type ASTScanner struct {
-	lang *sitter.Language
-	q    *sitter.Query
-	p    *sitter.Parser
-	qc   *sitter.QueryCursor
+	lang       *sitter.Language
+	q          *sitter.Query
+	p          *sitter.Parser
+	qc         *sitter.QueryCursor
+	svelteMode bool // extract <script> bodies from .svelte before querying
 }
 
 // NewASTScanner compiles the pattern for the language once. Returns a precise
 // error (unsupported language, or tree-sitter syntax error with offset) without
 // touching the filesystem.
 func NewASTScanner(language, pattern string) (*ASTScanner, error) {
-	getLang, ok := astLanguages[strings.ToLower(strings.TrimSpace(language))]
+	langKey := strings.ToLower(strings.TrimSpace(language))
+	getLang, ok := astLanguages[langKey]
 	if !ok {
 		return nil, fmt.Errorf("unsupported language %q (supported: %s)", language, strings.Join(SupportedASTLanguages(), ", "))
 	}
@@ -194,7 +207,13 @@ func NewASTScanner(language, pattern string) (*ASTScanner, error) {
 	}
 	p := sitter.NewParser()
 	p.SetLanguage(lang)
-	return &ASTScanner{lang: lang, q: q, p: p, qc: sitter.NewQueryCursor()}, nil
+	return &ASTScanner{
+		lang:       lang,
+		q:          q,
+		p:          p,
+		qc:         sitter.NewQueryCursor(),
+		svelteMode: langKey == "svelte" || langKey == "sveltekit",
+	}, nil
 }
 
 // Close releases the compiled query and cursor. Safe to call once.
@@ -210,6 +229,9 @@ func (s *ASTScanner) Close() {
 // ScanFile runs the compiled pattern over one file's source and appends matches
 // to out (stopping once len(*out) >= limit). Parse failures for a single file
 // are non-fatal (skipped). Errors only on predicate evaluation panics.
+//
+// In svelteMode, each <script> body is queried with the JS/TS grammar and match
+// lines are remapped onto the .svelte file (markup outside scripts is ignored).
 func (s *ASTScanner) ScanFile(ctx context.Context, relPath string, buf []byte, out *[]ASTMatch, limit int) (err error) {
 	// The tree-sitter binding evaluates a `#match?` predicate by calling
 	// regexp.MustCompile on the user-supplied regex, which PANICS on a malformed
@@ -221,6 +243,32 @@ func (s *ASTScanner) ScanFile(ctx context.Context, relPath string, buf []byte, o
 		}
 	}()
 
+	if s.svelteMode {
+		return s.scanSvelteScripts(ctx, relPath, buf, out, limit)
+	}
+	return s.scanBuffer(ctx, relPath, buf, 0, out, limit)
+}
+
+func (s *ASTScanner) scanSvelteScripts(ctx context.Context, relPath string, buf []byte, out *[]ASTMatch, limit int) error {
+	text := string(buf)
+	for _, m := range svelteScriptRe.FindAllStringSubmatchIndex(text, -1) {
+		if len(m) < 6 || len(*out) >= limit {
+			break
+		}
+		bodyStart, bodyEnd := m[4], m[5]
+		body := text[bodyStart:bodyEnd]
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		lineOffset := 1 + strings.Count(text[:bodyStart], "\n")
+		if err := s.scanBuffer(ctx, relPath, []byte(body), lineOffset-1, out, limit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ASTScanner) scanBuffer(ctx context.Context, relPath string, buf []byte, lineDelta int, out *[]ASTMatch, limit int) error {
 	tree, perr := s.p.ParseCtx(ctx, nil, buf)
 	if perr != nil || tree == nil {
 		return nil // unparseable file: skip, not fatal
@@ -245,7 +293,7 @@ func (s *ASTScanner) ScanFile(ctx context.Context, relPath string, buf []byte, o
 			start := node.StartPoint()
 			*out = append(*out, ASTMatch{
 				Path:    relPath,
-				Line:    int(start.Row) + 1,
+				Line:    int(start.Row) + 1 + lineDelta,
 				Col:     int(start.Column) + 1,
 				Capture: s.q.CaptureNameForId(cap.Index),
 				Text:    snippet(node.Content(buf)),

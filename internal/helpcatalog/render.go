@@ -150,6 +150,45 @@ func RenderReference(w fmtWriter, searchDirs ...string) error {
 	return nil
 }
 
+// WriteProjectReference writes a synthesized MCP tools catalog into the project's
+// .codehelper/ directory (gitignored) so agents always have an on-disk reference
+// even when docs/MCP_TOOLS.md is absent from the repo.
+func WriteProjectReference(repoRoot string) error {
+	if repoRoot == "" {
+		return fmt.Errorf("repo root is required")
+	}
+	dir := filepath.Join(repoRoot, ".codehelper")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var buf strings.Builder
+	meta := CatalogMeta()
+	fmt.Fprintf(&buf, "# Codehelper MCP tools — project reference\n\n")
+	fmt.Fprintf(&buf, "**Tool count:** %d (generated from `internal/mcpsvc/toolcatalog.go`).\n\n", meta.Count)
+	fmt.Fprintf(&buf, "**Param keys:** %s\n\n", meta.ParamKeys)
+	fmt.Fprintf(&buf, "This file is written by `codehelper init` / setup. Prefer `project_context` for live routing.\n\n")
+	for _, g := range Groups() {
+		names := meta.ByGroup[g]
+		if len(names) == 0 {
+			continue
+		}
+		fmt.Fprintf(&buf, "## %s\n\n", g)
+		for _, n := range names {
+			if t := ToolByName(n); t != nil {
+				fmt.Fprintf(&buf, "- **%s** — %s", t.Name, t.Summary)
+				if t.Params != "" {
+					fmt.Fprintf(&buf, " (`%s`)", t.Params)
+				}
+				fmt.Fprintln(&buf)
+			} else {
+				fmt.Fprintf(&buf, "- **%s**\n", n)
+			}
+		}
+		fmt.Fprintln(&buf)
+	}
+	return os.WriteFile(filepath.Join(dir, "MCP_TOOLS.md"), []byte(buf.String()), 0o644)
+}
+
 func renderOneTool(w fmtWriter, t Tool) {
 	fmt.Fprintf(w, "MCP tool: %s\n", t.Name)
 	if t.Main {

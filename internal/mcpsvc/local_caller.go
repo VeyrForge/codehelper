@@ -20,41 +20,46 @@ type LocalToolCaller struct {
 	defaultRepo string
 }
 
-// AgentToolNames lists the MCP tools exposed to the LLM agent loop.
+// AgentToolNames is the serve / in-process agent surface for feature lifecycle
+// work (add / remove / review). It used to be a 10-tool subset that omitted
+// kickoff, change_kit, plan, review_diff, finish_check, etc. — so HTTP serve
+// and agent chat could not run the same loops as full MCP stdio. Keep this
+// well under ~40 tools (selection accuracy cliff) while covering orient →
+// edit → gate end-to-end.
 var AgentToolNames = []string{
-	"project_context",
-	"query",
-	"context",
-	"impact",
-	"detect_changes",
-	"read_workspace_file",
-	"write_workspace_file",
-	"apply_patch_workspace_file",
-	"revert_workspace_edit",
+	// bootstrap / orient
+	"project_context", "kickoff", "scope",
+	// find / understand
+	"query", "scout", "context", "trace", "impact", "test_impact",
+	"search_hybrid", "context_bundle",
+	"api_surface", "ast_query", "find_implementations",
+	// plan / edit
+	"plan", "change_kit", "rename_symbol", "insert_at_symbol",
+	"read_workspace_file", "write_workspace_file",
+	"apply_patch_workspace_file", "revert_workspace_edit",
 	"list_workspace_directory",
+	// analysis
+	"dead_code", "hotspots", "diagnostics", "detect_changes", "since",
+	// gates
+	"review_diff", "review", "verify", "finish_check",
 }
 
 // NewLocalToolCaller builds an in-process caller scoped to workspaceRoot.
 // The workspace root substitutes for MCP client roots when resolving the
 // default repo, matching what the stdio transport derives from the IDE.
 func NewLocalToolCaller(reg *registry.Registry, workspaceRoot string) *LocalToolCaller {
-	c := &LocalToolCaller{
-		reg: reg,
-		handlers: map[string]server.ToolHandlerFunc{
-			"project_context":            projectContextHandler(reg),
-			"query":                      queryHandler(reg),
-			"context":                    contextHandler(reg),
-			"impact":                     impactHandler(reg),
-			"detect_changes":             detectChangesHandler(reg),
-			"read_workspace_file":        readWorkspaceFileHandler(reg),
-			"write_workspace_file":       writeWorkspaceFileHandler(reg),
-			"apply_patch_workspace_file": applyPatchWorkspaceFileHandler(reg),
-			"revert_workspace_edit":      revertWorkspaceEditHandler(reg),
-			"list_workspace_directory":   listWorkspaceDirectoryHandler(reg),
-		},
+	all := AllToolHandlers(reg)
+	handlers := make(map[string]server.ToolHandlerFunc, len(AgentToolNames))
+	for _, name := range AgentToolNames {
+		if h, ok := all[name]; ok {
+			handlers[name] = h
+		}
+	}
+	return &LocalToolCaller{
+		reg:         reg,
+		handlers:    handlers,
 		defaultRepo: repoNameForRoot(reg, workspaceRoot),
 	}
-	return c
 }
 
 // DefaultRepo returns the registry repo name resolved for the workspace root.
@@ -63,41 +68,17 @@ func (c *LocalToolCaller) DefaultRepo() string {
 }
 
 // repoNameForRoot maps an absolute workspace root onto a registry entry,
-// mirroring the MCP-roots matching used for IDE sessions.
+// mirroring the MCP-roots matching used for IDE sessions (deepest nested
+// registered project wins when cwd sits under multiple roots).
 func repoNameForRoot(reg *registry.Registry, root string) string {
 	root = strings.TrimSpace(root)
 	if reg == nil || root == "" {
 		return ""
 	}
-	rootN := normalizeComparablePath(root)
-	var parentMatches []registry.Entry
-	for _, e := range reg.List() {
-		repoRoot := normalizeComparablePath(e.RootPath)
-		if repoRoot == rootN || pathContains(repoRoot, rootN) {
-			return e.Name
-		}
-		if pathContains(rootN, repoRoot) {
-			parentMatches = append(parentMatches, e)
-		}
-	}
-	if len(parentMatches) == 1 {
-		return parentMatches[0].Name
+	if name, _, ok := repoNameForRoots(reg, []string{normalizeComparablePath(root)}); ok {
+		return name
 	}
 	return ""
-}
-
-// toolsAcceptingRepo lists tools whose handlers resolve an optional repo arg.
-var toolsAcceptingRepo = map[string]bool{
-	"project_context":            true,
-	"query":                      true,
-	"context":                    true,
-	"impact":                     true,
-	"detect_changes":             true,
-	"context_pack":               true,
-	"read_workspace_file":        true,
-	"write_workspace_file":       true,
-	"apply_patch_workspace_file": true,
-	"list_workspace_directory":   true,
 }
 
 // Call invokes one tool and flattens its MCP result to the same text payload
@@ -111,15 +92,15 @@ func (c *LocalToolCaller) Call(ctx context.Context, name string, args map[string
 	if args == nil {
 		args = map[string]any{}
 	}
-	if toolsAcceptingRepo[name] {
-		if raw, _ := args["repo"].(string); strings.TrimSpace(raw) != "" && c.defaultRepo != "" && strings.TrimSpace(raw) != c.defaultRepo {
+	if c.defaultRepo != "" {
+		if raw, _ := args["repo"].(string); strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != c.defaultRepo {
 			b, _ := json.MarshalIndent(map[string]any{
 				"isError": true,
 				"message": fmt.Sprintf("repo %q is not the active workspace (%q); other projects are not accessible", strings.TrimSpace(raw), c.defaultRepo),
 			}, "", "  ")
 			return string(b), nil
 		}
-		if s, _ := args["repo"].(string); strings.TrimSpace(s) == "" && c.defaultRepo != "" {
+		if s, _ := args["repo"].(string); strings.TrimSpace(s) == "" {
 			args["repo"] = c.defaultRepo
 		}
 	}

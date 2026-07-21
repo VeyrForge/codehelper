@@ -678,8 +678,10 @@ func languageFromExt(rel string) string {
 		return "astro"
 	case ".mdx":
 		return "mdx"
-	case ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs":
+	case ".ts", ".tsx":
 		return "typescript"
+	case ".js", ".jsx", ".mjs", ".cjs":
+		return "javascript"
 	default:
 		return "unknown"
 	}

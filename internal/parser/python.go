@@ -51,6 +51,11 @@ func ParsePython(ctx context.Context, repoID, relPath string, buf []byte) (*Pars
 			out.Edges = append(out.Edges, containsEdge(repoID, relPath, sym.ID))
 			extractCalls(n, buf, repoID, relPath, sym.ID, out)
 			addReadEdgesFromNode(repoID, relPath, sym.ID, n, buf, out)
+			// Decorators sit on the parent decorated_definition, not inside the
+			// function body — walk them so Depends/app.get appear as call edges.
+			if p := n.Parent(); p != nil && p.Type() == "decorated_definition" {
+				extractPythonDecoratorCalls(p, buf, repoID, relPath, sym.ID, out)
+			}
 		case "class_definition":
 			name := ChildName(n, "name", buf)
 			if name == "" {
@@ -78,6 +83,7 @@ func ParsePython(ctx context.Context, repoID, relPath string, buf []byte) (*Pars
 		}
 	})
 	addPythonFrameworkSymbols(repoID, relPath, buf, out, frameworks)
+	addPythonDICallEdges(tree.RootNode(), buf, repoID, relPath, out)
 	return out, nil
 }
 
@@ -89,6 +95,19 @@ func pyImportModule(n *sitter.Node, buf []byte) string {
 		}
 	}
 	return ""
+}
+
+func extractPythonDecoratorCalls(decorated *sitter.Node, buf []byte, repoID, relPath, fromSym string, out *ParseResult) {
+	if decorated == nil {
+		return
+	}
+	for i := 0; i < int(decorated.ChildCount()); i++ {
+		c := decorated.Child(i)
+		if c == nil || c.Type() != "decorator" {
+			continue
+		}
+		extractCalls(c, buf, repoID, relPath, fromSym, out)
+	}
 }
 
 func addPythonFrameworkSymbols(repoID, relPath string, buf []byte, out *ParseResult, frameworks []string) {
@@ -112,4 +131,80 @@ func addPythonFrameworkSymbols(repoID, relPath string, buf []byte, out *ParseRes
 			out.Edges = append(out.Edges, containsEdge(repoID, relPath, sym.ID))
 		}
 	}
+}
+
+// addPythonDICallEdges attaches Depends / include_router calls that live at
+// module scope (common in FastAPI tutorials) to the local `app`/`router`
+// symbol so they participate in the call graph after symref resolution.
+func addPythonDICallEdges(root *sitter.Node, buf []byte, repoID, relPath string, out *ParseResult) {
+	if root == nil || out == nil {
+		return
+	}
+	fallback := ""
+	for _, s := range out.Symbols {
+		switch s.Name {
+		case "app", "router":
+			if fallback == "" {
+				fallback = s.ID
+			}
+		}
+	}
+	Walk(root, func(n *sitter.Node) {
+		if n.Type() != "call" {
+			return
+		}
+		name := calleeName(n.ChildByFieldName("function"), buf)
+		if name != "Depends" && name != "include_router" {
+			return
+		}
+		from := enclosingPythonFunctionSym(n, buf, repoID, relPath, out)
+		if from == "" {
+			from = fallback
+		}
+		if from == "" {
+			return
+		}
+		// Skip duplicates already emitted from function-body extractCalls.
+		tgt := fmt.Sprintf("symref:%s:%s:%s", repoID, relPath, name)
+		for _, e := range out.Edges {
+			if e.Kind == types.RefKindCalls && e.SourceID == from && e.TargetID == tgt {
+				return
+			}
+		}
+		out.Edges = append(out.Edges, types.Reference{
+			ID:         edgeID(repoID, from, tgt, "calls"),
+			RepoID:     repoID,
+			Kind:       types.RefKindCalls,
+			SourceID:   from,
+			TargetID:   tgt,
+			Confidence: 0.85,
+		})
+	})
+}
+
+func enclosingPythonFunctionSym(n *sitter.Node, buf []byte, repoID, relPath string, out *ParseResult) string {
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		if p.Type() != "function_definition" {
+			continue
+		}
+		name := ChildName(p, "name", buf)
+		if name == "" {
+			return ""
+		}
+		ls := int(p.StartPoint().Row) + 1
+		want := fmt.Sprintf("sym:%s:%s:%d:%s", repoID, relPath, ls, name)
+		for _, s := range out.Symbols {
+			if s.ID == want {
+				return s.ID
+			}
+		}
+		// Fallback: first symbol with this name in the file.
+		for _, s := range out.Symbols {
+			if s.Name == name {
+				return s.ID
+			}
+		}
+		return ""
+	}
+	return ""
 }

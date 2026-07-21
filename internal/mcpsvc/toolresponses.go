@@ -10,6 +10,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/secrets"
+	"github.com/VeyrForge/codehelper/internal/setupsuggest"
 	"github.com/VeyrForge/codehelper/pkg/types"
 )
 
@@ -127,9 +128,19 @@ type policyBrief struct {
 	GitHub          *githubBrief `json:"github,omitempty"`
 }
 
+type webSiteBrief struct {
+	Name      string `json:"name"`
+	Kind      string `json:"kind,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+	User      string `json:"user,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	HasSecret bool   `json:"has_secret"`
+}
+
 type connectionsBrief struct {
 	Databases  []dbConnBrief    `json:"databases,omitempty"`
 	SSHHosts   []sshHostBrief   `json:"ssh_hosts,omitempty"`
+	WebSites   []webSiteBrief   `json:"websites,omitempty"`
 	LogSources []logSourceBrief `json:"log_sources,omitempty"`
 	Aliases    []aliasBrief     `json:"aliases,omitempty"`
 	Policy     *policyBrief     `json:"policy,omitempty"`
@@ -143,7 +154,7 @@ func connectionsBriefFor(repoRoot string) *connectionsBrief {
 	if err != nil || cfg.Empty() {
 		return nil
 	}
-	out := &connectionsBrief{Note: "connection profiles (read-only via MCP). Secrets, SSH users, and identity files are never shown. Manage with `codehelper connections` CLI only — the agent cannot add/remove profiles or allowlists unless agent_trust=allowlist_edits (future propose/approve flow). Ops tools: remote_list, remote_exec, log_read, db_query, db_schema, run_alias, env_context, ci_status."}
+	out := &connectionsBrief{Note: "connection profiles (read-only via MCP). Secrets, SSH users, and identity files are never shown. Manage with `codehelper connections` CLI only — the agent cannot add/remove profiles or allowlists unless agent_trust=allowlist_edits (future propose/approve flow). Ops tools: remote_list, remote_exec, log_read, db_query, db_schema, run_alias, env_context, ci_status. Browser: site= + recipe=wp_login|laravel_login|django_admin|drupal_login|magento_login|spa_hydrate (kind-aware defaults). SSH remotes: port-forward to 127.0.0.1 then browse (GuardURL-safe)."}
 	for _, d := range cfg.Databases {
 		hasSecret := strings.HasPrefix(strings.TrimSpace(d.PasswordRef), "env:") ||
 			(d.UsesSecretStore() && secrets.Has(repoRoot, d.Name))
@@ -161,6 +172,14 @@ func connectionsBriefFor(repoRoot string) *connectionsBrief {
 		out.SSHHosts = append(out.SSHHosts, sshHostBrief{
 			Name: h.Name, Hostname: h.Hostname, JumpHost: h.JumpHost,
 			Enabled: h.Enabled(), AllowedCommands: h.AllowedCommands, Recipes: recipes,
+		})
+	}
+	for _, s := range cfg.WebSites {
+		hasSecret := strings.HasPrefix(strings.TrimSpace(s.PasswordRef), "env:") ||
+			(s.UsesSecretStore() && secrets.Has(repoRoot, s.Name))
+		out.WebSites = append(out.WebSites, webSiteBrief{
+			Name: s.Name, Kind: s.Kind, BaseURL: s.BaseURL, User: s.User,
+			Enabled: s.Enabled(), HasSecret: hasSecret,
 		})
 	}
 	for _, l := range cfg.LogSources {
@@ -235,9 +254,12 @@ type projectContextMCPResponse struct {
 	CLIONlyTools            []string               `json:"cli_only_tools,omitempty"`
 	MCPToolsMode            string                 `json:"mcp_tools_mode,omitempty"`
 	Connections             *connectionsBrief      `json:"connections,omitempty"`
+	SetupSuggestions        *setupsuggest.Report   `json:"setup_suggestions,omitempty"`
 	AgentInstructionFiles   []string               `json:"agent_instruction_files,omitempty"`
 	MCPToolsEnabled         *bool                  `json:"mcp_tools_enabled,omitempty"`
 	RecommendedNextTools    []string               `json:"recommended_next_tools,omitempty"`
+	WorkflowRecipes         []WorkflowRecipe       `json:"workflow_recipes,omitempty"`
+	VerifyFinishGate        string                 `json:"verify_finish_gate,omitempty"`
 	NextStep                string                 `json:"next_step,omitempty"`
 	Warnings                []string               `json:"warnings,omitempty"`
 	Confidence              float64                `json:"confidence,omitempty"`
@@ -271,6 +293,7 @@ func compactProjectContext(out projectContextMCPResponse) projectContextMCPRespo
 		PrimaryLanguage:         out.PrimaryLanguage,
 		Summary:                 out.Summary,
 		Connections:             out.Connections,
+		SetupSuggestions:        out.SetupSuggestions,
 		SuggestedVerifyCommands: out.SuggestedVerifyCommands,
 		MCPToolCount:            out.MCPToolCount,
 		MCPMainTools:            out.MCPMainTools,
@@ -280,6 +303,8 @@ func compactProjectContext(out projectContextMCPResponse) projectContextMCPRespo
 		AgentInstructionFiles:   out.AgentInstructionFiles,
 		MCPToolsEnabled:         out.MCPToolsEnabled,
 		RecommendedNextTools:    out.RecommendedNextTools,
+		WorkflowRecipes:         out.WorkflowRecipes,
+		VerifyFinishGate:        out.VerifyFinishGate,
 		NextStep:                out.NextStep,
 		Warnings:                out.Warnings,
 		Confidence:              out.Confidence,

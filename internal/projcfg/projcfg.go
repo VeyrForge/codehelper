@@ -54,6 +54,30 @@ type Config struct {
 	VerifyBuild string `json:"verify_build,omitempty"`
 	VerifyTest  string `json:"verify_test,omitempty"`
 	VerifyLint  string `json:"verify_lint,omitempty"`
+
+	// Browser* are optional per-project defaults for the browser MCP tool and
+	// setup_suggestions. Agents propose these to the user; users set them via
+	// `codehelper config project` so the agent does not invent URLs/credentials.
+	BrowserBaseURL      string `json:"browser_base_url,omitempty"`
+	BrowserSite         string `json:"browser_site,omitempty"`          // default connections website name for site=
+	BrowserRecipe       string `json:"browser_recipe,omitempty"`        // default recipe name
+	BrowserHeaded       *bool  `json:"browser_headed,omitempty"`        // nil = unset (env/per-call wins)
+	BrowserAllowPrivate *bool  `json:"browser_allow_private,omitempty"` // nil = unset
+	// TestCredentialsNote tells the agent where the user keeps test logins
+	// (e.g. "1Password vault X" / "ask me") — never a password value.
+	TestCredentialsNote string `json:"test_credentials_note,omitempty"`
+}
+
+// BrowserConfigKeys lists projcfg JSON keys agents may propose for browser setup.
+func BrowserConfigKeys() []string {
+	return []string{
+		"browser_base_url",
+		"browser_site",
+		"browser_recipe",
+		"browser_headed",
+		"browser_allow_private",
+		"test_credentials_note",
+	}
 }
 
 // Default is the config used when no file exists: tools on, summary telemetry.

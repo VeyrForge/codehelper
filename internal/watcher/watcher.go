@@ -84,9 +84,14 @@ const DefaultMaxPendingFlush = 512
 // builtInSkipDirs mirrors indexer.defaultSkipDirs to keep the watcher cheap.
 var builtInSkipDirs = map[string]struct{}{
 	"node_modules": {}, "vendor": {}, ".vendor": {}, ".git": {}, "dist": {}, "build": {},
-	".codehelper": {}, "target": {}, "__pycache__": {}, ".venv": {}, "venv": {},
+	"out": {}, "tmp": {},
+	".codehelper": {}, "target": {}, "obj": {}, "__pycache__": {}, ".venv": {}, "venv": {},
 	".idea": {}, ".vscode": {}, "coverage": {}, ".next": {}, ".nuxt": {},
 	".mypy_cache": {}, ".pytest_cache": {}, ".cache": {},
+	".turbo": {}, ".parcel-cache": {}, ".output": {}, ".svelte-kit": {},
+	"storybook-static": {}, ".angular": {}, ".vercel": {}, ".netlify": {},
+	".dart_tool": {}, ".gradle": {}, ".tox": {}, ".nyc_output": {},
+	"site-packages": {},
 }
 
 // Watcher coordinates an fsnotify backend with a debounce/coalesce loop.

@@ -81,7 +81,7 @@ func TestCollectNestedGitignorePrune(t *testing.T) {
 	}
 }
 
-// TestLayeredMatcherIgnoresViaDefaultSkipDirsToo confirms defaultSkipDirs are
+// TestCollectSkipsDefaultSkipDirs confirms defaultSkipDirs are
 // pruned during collection (node_modules etc. never contribute rules).
 func TestCollectSkipsDefaultSkipDirs(t *testing.T) {
 	root := t.TempDir()
@@ -95,6 +95,61 @@ func TestCollectSkipsDefaultSkipDirs(t *testing.T) {
 		if strings.Contains(filepath.ToSlash(p), "node_modules") {
 			t.Fatalf("collected from node_modules: %s", p)
 		}
+	}
+}
+
+// TestWalkSourceFilesSkipsFrameworkCacheDirs verifies common bundler/framework
+// output trees (.turbo, .output, out, …) are pruned even when not gitignored.
+func TestWalkSourceFilesSkipsFrameworkCacheDirs(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "src", "main.ts"), "export const ok = 1")
+	noise := []string{
+		filepath.Join(root, ".turbo", "cache.js"),
+		filepath.Join(root, "out", "chunk.js"),
+		filepath.Join(root, "tmp", "x.js"),
+		filepath.Join(root, ".parcel-cache", "x.js"),
+		filepath.Join(root, ".output", "server.js"),
+		filepath.Join(root, ".svelte-kit", "generated.js"),
+		filepath.Join(root, "storybook-static", "main.js"),
+		filepath.Join(root, ".angular", "cache", "x.js"),
+		filepath.Join(root, "packages", "app", ".turbo", "nested.js"),
+		filepath.Join(root, "obj", "Debug", "x.cs"),
+		filepath.Join(root, "src", "obj", "x.cs"),
+		filepath.Join(root, "target", "classes", "X.java"),
+		filepath.Join(root, ".gradle", "caches", "x.java"),
+	}
+	for _, p := range noise {
+		mustWrite(t, p, "export const noise = 1")
+	}
+	got, err := WalkSourceFiles(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "src/main.ts") {
+		t.Fatalf("expected src/main.ts kept, got %v", got)
+	}
+	for _, bad := range []string{".turbo", "/out/", "tmp/", ".parcel-cache", ".output", ".svelte-kit", "storybook-static", ".angular", "site-packages", "obj/", "target/", ".gradle"} {
+		if strings.Contains(joined, bad) {
+			t.Fatalf("framework cache dir %q was indexed: %v", bad, got)
+		}
+	}
+}
+
+func TestWalkSourceFilesSkipsSitePackages(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, root+"/pkg/a.py", "x = 1\n")
+	mustWrite(t, root+"/site-packages/foo/a.py", "y = 1\n")
+	got, err := WalkSourceFiles(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "pkg/a.py") {
+		t.Fatalf("expected pkg/a.py, got %v", got)
+	}
+	if strings.Contains(joined, "site-packages") {
+		t.Fatalf("site-packages must be skipped, got %v", got)
 	}
 }
 

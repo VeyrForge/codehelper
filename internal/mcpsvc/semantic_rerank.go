@@ -16,8 +16,8 @@ func semanticRerankStatus(hits []retrieval.RankedSymbol) string {
 	}
 	for _, h := range hits {
 		for _, r := range h.Reasons {
-			if r == "semantic" {
-				return "active — re-ranked by your local multilingual embedding model, so non-English / slang / typo'd phrasing still finds the right code. These are CONCEPTUAL matches: confirm with `context` or `read_workspace_file` before you act on one."
+			if r == "semantic" || r == "vector" {
+				return "active — re-ranked by your local multilingual embedding model (RRF-fused with BM25/graph), so non-English / slang / typo'd phrasing still finds the right code. These are CONCEPTUAL matches: confirm with `context_bundle` or `context` before you act on one."
 			}
 		}
 	}

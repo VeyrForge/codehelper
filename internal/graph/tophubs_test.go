@@ -80,6 +80,16 @@ func TestIsVendorPath(t *testing.T) {
 			t.Errorf("%q should NOT be vendor", p)
 		}
 	}
+	for _, p := range []string{
+		"docs_src/tutorial.py", "sample/01-cats/main.ts", "examples/hello.js",
+		"integration/e2e.ts", "app_test.go", "lib/foo_test.go",
+		"tests/snapshot/_expected/main.js", "expected.css",
+		"assets/app.css", "styles/theme.scss",
+	} {
+		if !isVendorPath(p) && !isStyleHubPath(p) {
+			t.Errorf("%q should be treated as hub noise", p)
+		}
+	}
 }
 
 func TestTopPackages(t *testing.T) {

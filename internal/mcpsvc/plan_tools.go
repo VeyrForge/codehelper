@@ -74,6 +74,7 @@ func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		hits, _ = demoteFixtureHits(hits)
 
 		out := planResponse{Task: task, Role: role}
 		for _, h := range hits {
@@ -209,9 +210,10 @@ func roleConsiderations(role string) []string {
 		},
 		"performance": {
 			"Hot path or rare? Estimate input size/frequency before optimizing.",
+			"Call `hotspots` (churn × centrality) to pick where perf work pays off.",
 			"Avoid N+1 queries/scans and accidental O(n^2) over large sets.",
 			"Bound memory; stream/paginate large results; reuse buffers on hot paths.",
-			"Add a benchmark or measurement if this is load-bearing.",
+			"After edits: `impact` + `test_impact` on changed hotspot symbols; add a benchmark if load-bearing.",
 		},
 		"refactor": {
 			"Behavior must not change — lock it with characterization tests first.",
@@ -233,7 +235,7 @@ func roleConsiderations(role string) []string {
 		out = append(out, "Security: validate inputs, enforce authz, avoid injection/secret leakage.")
 	}
 	if role != "performance" {
-		out = append(out, "Performance: avoid N+1 / O(n^2) / unbounded memory on the common path.")
+		out = append(out, "Performance: avoid N+1 / O(n^2) / unbounded memory on the common path; use `hotspots` for hot-path targets.")
 	}
 	return out
 }
@@ -266,10 +268,23 @@ func planSteps(role string, top *reuseCandidate) []string {
 		"Run `diagnostics`, then the verification commands; add/extend tests for the new behavior.",
 	)
 	switch role {
-	case "security":
-		steps = append(steps, "Security pass on the diff: input validation, authz, injection, secret handling.")
+	case "architect":
+		steps = append([]string{
+			"Map the path with `investigate recipe=architecture` or `trace`/`context`/`impact` on the closest reuse candidate (prefer methods over leaf types).",
+			"Resolve decision_points and placement WITH the user — cite symbols/paths; do not edit yet.",
+			"Once accepted: `change_kit` → smallest patch → diagnostics → review_diff → verify → finish_check.",
+		}, steps...)
 	case "performance":
-		steps = append(steps, "Performance pass: confirm no N+1/O(n^2) on the common path; measure if hot.")
+		steps = append(steps,
+			"Call `hotspots` to find churn×centrality files on the hot path before optimizing.",
+			"Run `impact` + `test_impact` on any hotspot symbol you change; measure before/after.",
+			"Performance pass: confirm no N+1/O(n^2) on the common path; measure if hot.",
+		)
+	case "security":
+		steps = append(steps,
+			"Security pass: run `review` / `review_diff` (include_security) for injection/secrets/eval smells.",
+			"Confirm authz on every new entrypoint; no secrets in code or logs.",
+		)
 	}
 	return steps
 }
@@ -277,9 +292,9 @@ func planSteps(role string, top *reuseCandidate) []string {
 // RegisterPlanTools registers the architect-mode planner.
 func RegisterPlanTools(s *server.MCPServer, reg *registry.Registry) {
 	s.AddTool(mcp.NewTool("plan",
-		mcp.WithDescription("Architect-mode planner: turn a task into a grounded, step-by-step plan BEFORE writing code. In ONE call it (1) checks whether it already exists (ranked reuse candidates with caller counts), (2) shows the blast radius of the closest match, (3) frames the decisions to make (extend vs add, backward-compat, trust boundary, hot path…) as decision_points to resolve with the user, (4) gives a role-specific considerations checklist (security & performance always included), and (5) lays out implementation steps + verification commands. Set role=architect|security|performance|refactor|feature. Use when asked to design/plan/add/refactor a feature."),
+		mcp.WithDescription("Architect-mode planner: turn a task into a grounded plan BEFORE writing code — reuse candidates, blast radius, decision_points, role checklist, steps + verify cmds. role=architect = design Q&A (cite symbols; no edit until accepted; pairs with investigate recipe=architecture). Other roles: security|performance|refactor|feature (default). Prefer kickoff for the same pack plus orient/docs."),
 		mcp.WithString("task", mcp.Required(), mcp.Description("What you want to build/change/investigate, in natural language")),
-		mcp.WithString("role", mcp.Description("Expert lens: architect | security | performance | refactor | feature (default)")),
+		mcp.WithString("role", mcp.Description("Expert lens: architect (design Q&A) | security | performance | refactor | feature (default)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
 		annotReadOnlyClosedWorld(),

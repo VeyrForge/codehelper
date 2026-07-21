@@ -134,6 +134,18 @@ func astQueryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		default:
 			out.Note = "Structural matches read live from disk (never stale). Each row's 'capture' names which part of the pattern it bound; 'loc' is path:line."
 		}
+		if strings.EqualFold(canonicalASTLang(language), "svelte") {
+			note := "language=svelte queries <script> bodies with the JS/TS grammar (markup outside scripts is ignored)."
+			if out.Note != "" {
+				out.Note = note + " " + out.Note
+			} else {
+				out.Note = note
+			}
+		}
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
+}
+
+func canonicalASTLang(language string) string {
+	return parser.CanonicalASTLanguage(language)
 }

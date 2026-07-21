@@ -50,6 +50,7 @@ Supported DB drivers: ` + fmt.Sprint(connections.SupportedDrivers()),
 	}
 	c.AddCommand(
 		connectionsListCmd(), connectionsAddDBCmd(), connectionsAddSSHCmd(),
+		connectionsAddSiteCmd(),
 		connectionsRemoveCmd(), connectionsSetSecretCmd(),
 		connectionsEnableCmd("enable", true), connectionsEnableCmd("disable", false),
 		connectionsPolicyCmd(), connectionsAddLogCmd(), connectionsDetectLogsCmd(),
@@ -75,6 +76,7 @@ func printConnections(repoRoot string, cfg connections.Config) error {
 		"repo_root":   repoRoot,
 		"databases":   cfg.Databases,
 		"ssh_hosts":   cfg.SSHHosts,
+		"websites":    cfg.WebSites,
 		"log_sources": cfg.LogSources,
 		"aliases":     cfg.Aliases,
 		"policy":      cfg.Policy,
@@ -175,6 +177,58 @@ func connectionsAddSSHCmd() *cobra.Command {
 	return c
 }
 
+func connectionsAddSiteCmd() *cobra.Command {
+	var s connections.WebSite
+	var path string
+	c := &cobra.Command{
+		Use:   "add-site",
+		Short: "Add or update an HTTP/WordPress site profile for browser recipes",
+		Long: `Stores NON-SECRET site metadata (base URL, user, kind) for browser recipes
+like wp_login, laravel_login, django_admin, drupal_login, magento_login, spa_hydrate.
+Passwords are never accepted inline — use --password-ref env:VAR or pipe into
+connections set-secret --name <site>.
+
+Kinds: wordpress | laravel | django | drupal | magento | spa | generic
+
+Examples:
+  codehelper connections add-site --name local-wp --url http://wp-test.local --kind wordpress --user admin --password-ref secret
+  codehelper connections add-site --name local-laravel --url http://127.0.0.1:8000 --kind laravel --user test@example.com --password-ref env:APP_PASS
+  printf '%s' "$WP_PASS" | codehelper connections set-secret --name local-wp
+  codehelper browser test --recipe wp_login --site local-wp
+
+Remote via SSH tunnel (GuardURL-safe loopback):
+  ssh -N -L 8080:127.0.0.1:80 user@host
+  codehelper connections add-site --name tunneled --url http://127.0.0.1:8080 --kind wordpress --user admin --password-ref secret`,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			repoRoot, err := connectionsRepoRoot([]string{path})
+			if err != nil {
+				return err
+			}
+			cfg, err := connections.Load(repoRoot)
+			if err != nil {
+				return err
+			}
+			if err := cfg.AddWebSite(s); err != nil {
+				return err
+			}
+			if err := connections.Save(repoRoot, cfg); err != nil {
+				return err
+			}
+			return printConnections(repoRoot, cfg)
+		},
+	}
+	f := c.Flags()
+	f.StringVar(&path, "path", ".", "repo path")
+	f.StringVar(&s.Name, "name", "", "profile name (required)")
+	f.StringVar(&s.BaseURL, "url", "", "site base URL, e.g. http://wp-test.local (required)")
+	f.StringVar(&s.Kind, "kind", "wordpress", "wordpress|laravel|django|drupal|magento|spa|generic")
+	f.StringVar(&s.User, "user", "", "login username")
+	f.StringVar(&s.LoginPath, "login-path", "", "override login path (default /wp-login.php)")
+	f.StringVar(&s.AdminPath, "admin-path", "", "override admin path (default /wp-admin/)")
+	f.StringVar(&s.PasswordRef, "password-ref", "", "secret reference: env:VAR or secret (never inline)")
+	return c
+}
+
 // splitCommaArg parses a comma-separated flag into trimmed, non-empty items.
 func splitCommaArg(s string) []string {
 	if strings.TrimSpace(s) == "" {
@@ -196,12 +250,13 @@ func connectionsSetSecretCmd() *cobra.Command {
 	var name, path string
 	c := &cobra.Command{
 		Use:   "set-secret",
-		Short: "Store an encrypted password for a DB profile (reads plaintext from stdin)",
+		Short: "Store an encrypted password for a DB or website profile (reads plaintext from stdin)",
 		Long: `Reads a password from stdin, encrypts it (AES-256-GCM) into the global
 secret store outside the repo, and sets the profile's password_ref to "secret".
 The plaintext is never written to the repo, the profile file, or any tool output.
 
-Example:  printf '%s' "$DB_PASS" | codehelper connections set-secret --name staging_pg`,
+Example:  printf '%s' "$DB_PASS" | codehelper connections set-secret --name staging_pg
+          printf '%s' "$WP_PASS" | codehelper connections set-secret --name local-wp`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if strings.TrimSpace(name) == "" {
 				return fmt.Errorf("--name is required")
@@ -221,7 +276,7 @@ Example:  printf '%s' "$DB_PASS" | codehelper connections set-secret --name stag
 			if err := secrets.Set(repoRoot, name, plaintext); err != nil {
 				return err
 			}
-			// Point the matching DB profile at the secret store (if it exists yet).
+			// Point the matching DB or website profile at the secret store.
 			cfg, err := connections.Load(repoRoot)
 			if err != nil {
 				return err
@@ -229,6 +284,11 @@ Example:  printf '%s' "$DB_PASS" | codehelper connections set-secret --name stag
 			for i := range cfg.Databases {
 				if strings.EqualFold(cfg.Databases[i].Name, name) {
 					cfg.Databases[i].PasswordRef = connections.SecretRef
+				}
+			}
+			for i := range cfg.WebSites {
+				if strings.EqualFold(cfg.WebSites[i].Name, name) {
+					cfg.WebSites[i].PasswordRef = connections.SecretRef
 				}
 			}
 			if err := connections.Save(repoRoot, cfg); err != nil {

@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/VeyrForge/codehelper/internal/connections"
 	"github.com/VeyrForge/codehelper/internal/freshness"
 	"github.com/VeyrForge/codehelper/internal/hints"
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
 	"github.com/VeyrForge/codehelper/internal/profile"
+	"github.com/VeyrForge/codehelper/internal/projcfg"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/setupsuggest"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -38,23 +41,28 @@ type kickoffResponse struct {
 	Steps           []string         `json:"steps"`
 	Verification    []string         `json:"verification,omitempty"`
 	Freshness       string           `json:"freshness,omitempty"`
+	CollisionNote   string           `json:"collision_note,omitempty"` // sample/test/fixture demotion for Locate/Vibe
 	Note            string           `json:"note"`
 }
 
 type kickoffOrient struct {
-	ProjectType string   `json:"project_type"`
-	Languages   []string `json:"languages,omitempty"`
-	Frameworks  []string `json:"frameworks,omitempty"`
-	KeyDeps     []string `json:"key_dependencies,omitempty"`
-	Summary     string   `json:"summary,omitempty"`
+	ProjectType      string               `json:"project_type"`
+	Languages        []string             `json:"languages,omitempty"`
+	Frameworks       []string             `json:"frameworks,omitempty"`
+	KeyDeps          []string             `json:"key_dependencies,omitempty"`
+	Summary          string               `json:"summary,omitempty"`
+	SetupSuggestions *setupsuggest.Report `json:"setup_suggestions,omitempty"`
 }
 
 func kickoffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
-		task := strings.TrimSpace(argString(args, "task"))
+		task, taskNote := resolveKickoffTask(args)
 		if task == "" {
-			return mcp.NewToolResultError("task is required — describe what you want to build/change in natural language."), nil
+			return mcp.NewToolResultError(
+				"task is required — describe what you want to build/change in natural language. " +
+					"Pass `task` (not `query`); if you already sent `query`, rename that field to `task` and retry.",
+			), nil
 		}
 		role := strings.ToLower(strings.TrimSpace(argString(args, "role")))
 		if role == "" {
@@ -89,6 +97,17 @@ func kickoffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			if lh, herr := hints.MatchingFor(pp.Framework, pp.ProjectType, pp.Languages, depNames); herr == nil {
 				out.Gotchas = uniqueTrimmedStrings(out.Gotchas, lh)
 			}
+			conn, _ := connections.Load(repo.RootPath)
+			pcfg, _ := projcfg.Load(repo.RootPath)
+			sug := setupsuggest.Build(setupsuggest.Input{
+				RepoRoot:    repo.RootPath,
+				ProjectType: pp.ProjectType,
+				Framework:   pp.Framework,
+				Frameworks:  frameworks,
+				Connections: conn,
+				Projcfg:     pcfg,
+			})
+			out.Orient.SetupSuggestions = &sug
 		}
 
 		// --- FIND: reuse candidates ranked by subject (same path as scout/plan) ---
@@ -101,6 +120,10 @@ func kickoffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		hits, demoted := demoteFixtureHits(hits)
+		if note := fixtureCollisionNote(demoted); note != "" {
+			out.CollisionNote = note
 		}
 		for _, h := range hits {
 			out.ReuseCandidates = append(out.ReuseCandidates, reuseCandidate{
@@ -155,7 +178,13 @@ func kickoffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if fresh := freshness.Inspect(repo.RootPath); fresh.Stale {
 			out.Freshness = "index may be stale (" + fresh.StaleReason + ") — re-run analyze for accurate reuse/impact"
 		}
-		out.Note = "One-shot task starter (orient + reuse + docs + decisions + verify). Resolve the decision_points (ask the user when they're genuine choices), confirm the top reuse_candidate with `context` before extending, fetch any relevant_docs you'll code against, then implement and run the verification commands."
+		out.Note = "One-shot task starter (orient + reuse + docs + decisions + verify). Resolve the decision_points (ask the user when they're genuine choices), confirm the top reuse_candidate with `context` before extending, fetch any relevant_docs you'll code against, then implement and run the verification commands. After edits: diagnostics → review_diff → verify → finish_check (can_claim_done)."
+		if role == "architect" {
+			out.Note = "Architect mode: answer with cited symbols/paths from reuse_candidates + impact_of_top; resolve decision_points/placement with the user. Do NOT apply patches until the design is accepted — then switch to role=feature (or investigate recipe=architecture → change_kit). Prefer method/fn targets if type hubs look leaf-only."
+		}
+		if taskNote != "" {
+			out.Note = taskNote + " " + out.Note
+		}
 
 		// Section opt-in: `sections=reuse,decisions` returns only those, for callers
 		// that want a cheaper, focused payload. Empty = everything (default).
@@ -236,12 +265,27 @@ func relevantDocs(task string, deps []string) []string {
 	return out
 }
 
+// resolveKickoffTask accepts the canonical `task` param and the common LLM alias
+// `query` (agents often confuse kickoff with the query tool). When only query is
+// set, it is used and a correction note is returned so the agent learns the right key.
+func resolveKickoffTask(args map[string]any) (task, note string) {
+	task = strings.TrimSpace(argString(args, "task"))
+	if task != "" {
+		return task, ""
+	}
+	if q := strings.TrimSpace(argFirst(args, "query", "q", "prompt", "request")); q != "" {
+		return q, "Accepted alias: you passed query=…; kickoff expects task=…. Prefer task= on the next call."
+	}
+	return "", ""
+}
+
 // RegisterKickoffTools registers the one-shot task starter.
 func RegisterKickoffTools(s *server.MCPServer, reg *registry.Registry) {
 	s.AddTool(mcp.NewTool("kickoff",
-		mcp.WithDescription("ONE-CALL task starter: in a single call returns orient (stack/frameworks/deps), reuse_candidates (ranked existing symbols with caller counts + a real usage example), relevant_docs (which libraries to pull API docs for), task-specific decision_points (grounded in the closest match's risk/callers/tests + the security domain the task touches), placement + duplication_risk, a role considerations checklist, steps, and verification commands. Use this FIRST when starting any feature/fix — it replaces chaining project_context + scout + plan. Set role=architect|security|performance|refactor|feature."),
-		mcp.WithString("task", mcp.Required(), mcp.Description("What you want to build/change, in natural language")),
-		mcp.WithString("role", mcp.Description("Expert lens: architect | security | performance | refactor | feature (default)")),
+		mcp.WithDescription("ONE-CALL task starter: orient + reuse + docs + decision_points + steps + verify cmds. Use FIRST for feature/fix/vibe starts (replaces project_context→scout→plan). Reuse ranks production over sample/test/fixture (see collision_note). role=architect = design Q&A — cite symbols, do NOT edit until accepted (pair with investigate recipe=architecture). Other roles: security|performance|refactor|feature (default). Param `task` (alias `query` accepted with a correction note). After edits: diagnostics→review_diff→verify→finish_check."),
+		mcp.WithString("task", mcp.Description("What you want to build/change/investigate, in natural language (preferred)")),
+		mcp.WithString("query", mcp.Description("Alias for task (accepted; prefer task=)")),
+		mcp.WithString("role", mcp.Description("Expert lens: architect (design Q&A, no edit yet) | security | performance | refactor | feature (default)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("sections", mcp.Description("Optional comma list to return ONLY these sections (cheaper payload): orient,reuse,docs,decisions,steps,verify. Empty = all.")),
 		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),

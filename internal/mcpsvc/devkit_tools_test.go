@@ -135,5 +135,8 @@ func TestDevkit_MissingTargetsGuide(t *testing.T) {
 		if !strings.Contains(errorText(t, res), "query") {
 			t.Errorf("%s: missing-symbol error should steer to query", name)
 		}
+		if name == "change_kit" && !strings.Contains(errorText(t, res), "analyze") {
+			t.Errorf("change_kit missing-symbol error should mention re-index/analyze")
+		}
 	}
 }

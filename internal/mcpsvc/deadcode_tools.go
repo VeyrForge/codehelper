@@ -3,6 +3,8 @@ package mcpsvc
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -17,16 +19,23 @@ import (
 
 // ---- dead_code -------------------------------------------------------------
 
+// deadCodeCandidate is shaped for LLM consumption: path + symbol + reason +
+// confidence, so agents can verify high-confidence rows first without parsing
+// Loc strings or inferring why a row was flagged.
 type deadCodeCandidate struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Loc       string `json:"loc"`
-	Recv      string `json:"recv,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	Exported  bool   `json:"exported"`
-	Caveat    string `json:"caveat,omitempty"`
+	Symbol     string  `json:"symbol"`
+	Path       string  `json:"path"`
+	Line       int     `json:"line"`
+	Kind       string  `json:"kind"`
+	Reason     string  `json:"reason"`
+	Confidence string  `json:"confidence"` // high | medium | low
+	Exported   bool    `json:"exported"`
+	Loc        string  `json:"loc"` // path:line — kept for older clients
+	Recv       string  `json:"recv,omitempty"`
+	Signature  string  `json:"signature,omitempty"`
+	Caveat     string  `json:"caveat,omitempty"` // alias of Reason for older clients
 
-	confident bool // unexported, non-handler function: ranked first; not serialized
+	rank int // lower = more confident; not serialized
 }
 
 type deadCodeResponse struct {
@@ -39,6 +48,11 @@ type deadCodeResponse struct {
 }
 
 const maxDeadCode = 50
+
+// syntheticRouteName matches indexer-invented route/entry symbols (Laravel
+// route_get_N, FastAPI fastapi_get_N, Express express_post_N, …) that are
+// never called via the graph by design.
+var syntheticRouteName = regexp.MustCompile(`(?i)^(route|fastapi|express|flask|fiber|gin|nest|axum|ktor)_(get|post|put|patch|delete|head|options|any)_\d+$`)
 
 // deadCodeHandler answers "what looks unused?" by listing symbols with no inbound
 // resolved call/read edge, then dropping the things that are invoked by a runtime
@@ -74,18 +88,17 @@ func deadCodeHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 
 		out := deadCodeResponse{
-			Safety: "OVER-approximation of dead code: these symbols have no inbound call/read edge the indexer resolved. The call graph misses dynamic dispatch, reflection, build tags, route/handler registration, generated code, and cross-repo callers. VERIFY each before deleting — run `impact` (upstream) on it and a textual search for its name across the repo.",
+			Safety: "OVER-approximation of dead code: these symbols have no inbound call/read edge the indexer resolved. The call graph misses dynamic dispatch, reflection, build tags, route/handler registration, generated code, and cross-repo callers. VERIFY each before deleting — run `impact` (upstream) on it and a textual search for its name across the repo. Prefer confidence=high rows.",
 		}
-		// Build the full candidate list first, then rank confident rows (unexported,
-		// non-handler functions) ahead of dynamically-invoked-looking ones, so the
-		// most-likely-truly-dead symbols survive the top_k cap instead of being
-		// pushed out by a flood of router handlers that only look unreferenced.
 		var all []deadCodeCandidate
 		for _, sym := range syms {
 			if review.IsTestPath(sym.Path) && !includeTests {
 				continue
 			}
-			if looksRuntimeInvoked(sym.Name) {
+			if review.IsSecondaryNoisePath(sym.Path) {
+				continue
+			}
+			if looksRuntimeInvoked(sym) || looksSyntheticOrNoise(sym) {
 				continue
 			}
 			out.Scanned++
@@ -93,19 +106,18 @@ func deadCodeHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			if exported && !includeExported {
 				continue
 			}
-			suspect := dynamicDispatchSuspect(sym)
-			all = append(all, deadCodeCandidate{
-				Name:      sym.Name,
-				Kind:      string(sym.Kind),
-				Loc:       fmt.Sprintf("%s:%d", sym.Path, sym.LineStart),
-				Recv:      sym.ParentID,
-				Signature: sym.Signature,
-				Exported:  exported,
-				Caveat:    joinCaveats(suspect, exportedCaveat(exported)),
-				confident: suspect == "" && !exported,
-			})
+			cand := classifyDeadCandidate(sym, exported)
+			all = append(all, cand)
 		}
-		sort.SliceStable(all, func(i, j int) bool { return all[i].confident && !all[j].confident })
+		sort.SliceStable(all, func(i, j int) bool {
+			if all[i].rank != all[j].rank {
+				return all[i].rank < all[j].rank
+			}
+			if all[i].Path != all[j].Path {
+				return all[i].Path < all[j].Path
+			}
+			return all[i].Line < all[j].Line
+		})
 		if len(all) > topK {
 			out.Truncated = len(all) - topK
 			all = all[:topK]
@@ -120,11 +132,52 @@ func deadCodeHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		case len(out.Candidates) == 0 && out.Scanned == 0:
 			out.Note = "nothing unreferenced for the requested kinds. If you expected results, the index may lack call-graph edges (run codehelper analyze --force)."
 		case len(out.Candidates) == 0:
-			out.Note = "every unreferenced symbol was excluded as exported or runtime-invoked. Pass include_exported=true to also surface exported-but-unused API (higher false-positive rate)."
+			out.Note = "every unreferenced symbol was excluded as exported, runtime-invoked, synthetic, or noise. Pass include_exported=true to also surface exported-but-unused API (higher false-positive rate)."
 		default:
-			out.Note = "Start with the highest-confidence rows: unexported functions in non-test files. Confirm with impact(upstream) + a name search before removing."
+			out.Note = "Start with confidence=high (unexported, non-framework names in production paths). Confirm with impact(upstream) + a name search before removing."
 		}
 		return mustToolResultFormatted(out, resolveFormat(args))
+	}
+}
+
+func classifyDeadCandidate(sym types.Symbol, exported bool) deadCodeCandidate {
+	suspect := dynamicDispatchSuspect(sym)
+	reasonParts := []string{"no inbound calls/reads in the index"}
+	if suspect != "" {
+		reasonParts = append(reasonParts, suspect)
+	}
+	if exported {
+		reasonParts = append(reasonParts, "exported/public: may be called from outside this repo")
+	}
+	reason := strings.Join(reasonParts, "; ")
+	conf, rank := deadCodeConfidence(exported, suspect)
+	loc := fmt.Sprintf("%s:%d", sym.Path, sym.LineStart)
+	return deadCodeCandidate{
+		Symbol:     sym.Name,
+		Path:       sym.Path,
+		Line:       sym.LineStart,
+		Kind:       string(sym.Kind),
+		Reason:     reason,
+		Confidence: conf,
+		Exported:   exported,
+		Loc:        loc,
+		Recv:       sym.ParentID,
+		Signature:  sym.Signature,
+		Caveat:     reason,
+		rank:       rank,
+	}
+}
+
+func deadCodeConfidence(exported bool, suspect string) (string, int) {
+	switch {
+	case !exported && suspect == "":
+		return "high", 0
+	case !exported && suspect != "":
+		return "medium", 1
+	case exported && suspect == "":
+		return "medium", 2
+	default:
+		return "low", 3
 	}
 }
 
@@ -149,53 +202,84 @@ func parseKinds(raw string) []string {
 	return out
 }
 
-// looksRuntimeInvoked excludes symbols a runtime calls instead of project code:
-// program/package entrypoints, the test runner's functions, and the std HTTP
-// handler method. These have no inbound graph edge by nature, not because they
-// are dead.
-func looksRuntimeInvoked(name string) bool {
+// looksRuntimeInvoked excludes symbols a runtime/framework calls instead of
+// project code: program entrypoints, test runners, HTTP handlers, DI hooks.
+func looksRuntimeInvoked(sym types.Symbol) bool {
+	name := sym.Name
 	switch name {
-	case "main", "init", "ServeHTTP", "setUp", "tearDown", "setup", "teardown", "SetUp", "TearDown":
+	case "main", "init", "ServeHTTP", "setUp", "tearDown", "setup", "teardown",
+		"SetUp", "TearDown", "setUpClass", "tearDownClass",
+		"__construct", "__destruct", "__invoke", "__call", "__callStatic",
+		"__get", "__set", "__isset", "__unset", "__toString", "__clone",
+		"handle", "Handle", "middleware", "boot", "register", "Register",
+		"configure", "Configure", "onModuleInit", "onModuleDestroy",
+		"onApplicationBootstrap", "beforeApplicationShutdown",
+		"ngOnInit", "ngOnDestroy", "ngAfterViewInit",
+		"componentDidMount", "componentWillUnmount",
+		"get", "post", "put", "patch", "delete", "head", "options",
+		"Get", "Post", "Put", "Patch", "Delete",
+		"index", "show", "store", "update", "destroy", "create", "edit",
+		"Index", "Show", "Store", "Update", "Destroy", "Create", "Edit",
+		"up", "down", "definition", "run", "seed":
 		return true
 	}
-	for _, p := range []string{"Test", "Benchmark", "Example", "Fuzz"} {
+	for _, p := range []string{"Test", "Benchmark", "Example", "Fuzz", "test_"} {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
 	}
+	if strings.HasSuffix(name, "Test") || strings.HasSuffix(name, "Tests") {
+		return true
+	}
 	return false
 }
 
-// dynamicDispatchSuspect flags symbols that are commonly invoked by a framework
-// or runtime rather than by code the indexer can see — the dominant source of
-// false positives. Returns a human caveat, or "" when the symbol looks like a
-// plain, directly-called function.
+// looksSyntheticOrNoise drops indexer-invented and non-code symbols that flood
+// dead_code on framework/tutorial repos (synthetic routes, CSS keyframes).
+func looksSyntheticOrNoise(sym types.Symbol) bool {
+	n := sym.Name
+	if syntheticRouteName.MatchString(n) {
+		return true
+	}
+	if strings.HasPrefix(n, "@keyframes") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "#") {
+		return true
+	}
+	if strings.HasPrefix(n, "--") { // CSS custom properties
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(sym.Path))
+	switch ext {
+	case ".css", ".scss", ".sass", ".less", ".md", ".mdx", ".html", ".htm", ".json", ".yaml", ".yml", ".toml":
+		return true
+	}
+	lang := strings.ToLower(sym.Language)
+	if lang == "css" || lang == "scss" {
+		return true
+	}
+	return false
+}
+
+// dynamicDispatchSuspect flags symbols commonly invoked by a framework or
+// runtime rather than by code the indexer can see. Returns a human caveat, or
+// "" when the symbol looks like a plain, directly-called function.
 func dynamicDispatchSuspect(sym types.Symbol) string {
 	n := sym.Name
 	switch {
-	case strings.HasPrefix(n, "handle") || strings.HasPrefix(n, "Handle") || strings.HasSuffix(n, "Handler"):
+	case strings.HasPrefix(n, "handle") || strings.HasPrefix(n, "Handle") || strings.HasSuffix(n, "Handler") ||
+		strings.HasSuffix(n, "Controller") || strings.HasSuffix(n, "Middleware"):
 		return "name looks like an HTTP/route handler — may be registered with a router, not called directly"
 	case (strings.HasPrefix(n, "On") || strings.HasPrefix(n, "on")) && len(n) > 2 && unicode.IsUpper([]rune(n)[2]):
 		return "name looks like an event callback — may be invoked dynamically"
+	case strings.HasPrefix(n, "before_") || strings.HasPrefix(n, "after_"):
+		return "name looks like a lifecycle/hook callback"
+	case strings.HasPrefix(n, "before") && len(n) > 6 && unicode.IsUpper(rune(n[6])):
+		return "name looks like a lifecycle/hook callback"
+	case strings.HasPrefix(n, "after") && len(n) > 5 && unicode.IsUpper(rune(n[5])):
+		return "name looks like a lifecycle/hook callback"
+	case strings.HasSuffix(n, "Listener") || strings.HasSuffix(n, "Subscriber") || strings.HasSuffix(n, "Observer"):
+		return "name looks like an event listener — may be registered dynamically"
 	case sym.Kind == types.SymbolKindMethod:
-		return "method: may satisfy an interface — dynamic dispatch is not fully resolved"
+		return "method: may satisfy an interface or be called via framework DI/dispatch"
 	}
 	return ""
-}
-
-func exportedCaveat(exported bool) string {
-	if exported {
-		return "exported: may be called from outside this repo"
-	}
-	return ""
-}
-
-func joinCaveats(parts ...string) string {
-	var keep []string
-	for _, p := range parts {
-		if p != "" {
-			keep = append(keep, p)
-		}
-	}
-	return strings.Join(keep, "; ")
 }

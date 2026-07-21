@@ -131,3 +131,33 @@ func TestResolveRepoWithoutMCPRootsRequiresExplicitRepoWhenAmbiguous(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRepoNameForRootsPrefersDeepestNestedProject(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "codehelper")
+	child := filepath.Join(parent, ".testbeds", "fiber")
+	reg := &registry.Registry{Entries: map[string]registry.Entry{
+		"codehelper": {Name: "codehelper", RootPath: parent, SchemaVer: 2},
+		"fiber":      {Name: "fiber", RootPath: child, SchemaVer: 2},
+	}}
+
+	// CWD / MCP root inside the nested testbed must bind to fiber, not parent.
+	name, reason, ok := repoNameForRoots(reg, []string{normalizeComparablePath(child)})
+	if !ok || name != "fiber" {
+		t.Fatalf("cwd=child: got (%q,%v) want fiber", name, ok)
+	}
+	if reason != "matched_mcp_roots" {
+		t.Fatalf("reason=%q", reason)
+	}
+
+	// Mid-path under parent but outside child still binds to parent.
+	mid := filepath.Join(parent, "internal")
+	name, _, ok = repoNameForRoots(reg, []string{normalizeComparablePath(mid)})
+	if !ok || name != "codehelper" {
+		t.Fatalf("cwd=mid: got (%q,%v) want codehelper", name, ok)
+	}
+
+	if got := repoNameForRoot(reg, child); got != "fiber" {
+		t.Fatalf("repoNameForRoot(child)=%q want fiber", got)
+	}
+}

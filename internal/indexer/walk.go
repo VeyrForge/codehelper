@@ -10,9 +10,17 @@ import (
 
 var defaultSkipDirs = map[string]struct{}{
 	"node_modules": {}, "vendor": {}, ".vendor": {}, ".git": {}, "dist": {}, "build": {},
-	".codehelper": {}, "target": {}, "__pycache__": {}, ".venv": {}, "venv": {},
+	"out": {}, "tmp": {},
+	".codehelper": {}, "target": {}, "obj": {}, "__pycache__": {}, ".venv": {}, "venv": {},
 	".idea": {}, ".vscode": {}, "coverage": {}, ".next": {}, ".nuxt": {},
 	".mypy_cache": {}, ".pytest_cache": {}, ".cache": {},
+	// Framework / bundler caches and static-export trees. Kept in sync with
+	// diagnostics generatedPathMarkers where possible so we neither index nor
+	// surface noise from these paths.
+	".turbo": {}, ".parcel-cache": {}, ".output": {}, ".svelte-kit": {},
+	"storybook-static": {}, ".angular": {}, ".vercel": {}, ".netlify": {},
+	".dart_tool": {}, ".gradle": {}, ".tox": {}, ".nyc_output": {},
+	"site-packages": {},
 }
 
 // SourceExtensions lists indexed file suffixes (must match parser registry).

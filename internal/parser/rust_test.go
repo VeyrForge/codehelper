@@ -80,3 +80,56 @@ func TestParseRustCapturesDocsAndSignature(t *testing.T) {
 		t.Errorf("enum doc not captured: %q", en.Sig)
 	}
 }
+
+const axumRouterSrc = `
+pub struct Router<S = ()> {}
+
+pub trait Handler {}
+
+impl Clone for Router {}
+
+impl Handler for Router {}
+
+async fn handler() -> &'static str { "ok" }
+async fn health() {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/", get(handler))
+        .route("/health", get(health))
+}
+`
+
+func TestParseRust_RouterTypeUseAndHandlers(t *testing.T) {
+	t.Parallel()
+	res, err := ParseRust(context.Background(), "r", "main.rs", []byte(axumRouterSrc))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var readsToRouter, callsToHandler, implements int
+	for _, e := range res.Edges {
+		switch e.Kind {
+		case "reads":
+			if strings.Contains(e.TargetID, ":Router") && strings.Contains(e.SourceID, ":app") {
+				readsToRouter++
+			}
+		case "calls":
+			if strings.Contains(e.SourceID, ":app") &&
+				(strings.Contains(e.TargetID, ":handler") || strings.Contains(e.TargetID, ":health")) {
+				callsToHandler++
+			}
+		case "implements":
+			implements++
+		}
+	}
+	if readsToRouter == 0 {
+		t.Fatal("expected app→Router type-use (reads) edge")
+	}
+	if callsToHandler < 2 {
+		t.Fatalf("expected app→handler and app→health call edges, got %d", callsToHandler)
+	}
+	if implements == 0 {
+		t.Fatal("expected implements edges for impl Trait for Router")
+	}
+}

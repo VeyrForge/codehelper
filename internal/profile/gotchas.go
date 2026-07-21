@@ -29,10 +29,36 @@ var frameworkGotchas = map[string][]string{
 		"Child theme: enqueue the PARENT stylesheet (get_template_directory_uri().'/style.css') as a dependency, then the child's (get_stylesheet_directory_uri()) — set $ver to filemtime() on both.",
 		"A template file placed in the child OVERRIDES the parent's; but functions.php is ADDITIVE (parent's also runs). Use get_stylesheet_directory() for child paths, get_template_directory() for parent paths.",
 	},
+	"unity": {
+		"Unity: use the MonoBehaviour lifecycle (Awake/Start/Update); don't allocate or GetComponent in Update; expose fields with [SerializeField]; scene/prefab changes are data, not code.",
+	},
 	"laravel": {
 		"Use Eloquent/Query Builder, not raw SQL. Run `php artisan migrate` after model/schema changes; never edit an applied migration.",
 		"Config is cached: run `php artisan config:clear` after editing .env. Routes may be cached too (`route:clear`).",
 		"Respect mass-assignment ($fillable/$guarded) and validate via Form Requests.",
+		"Call graphs are sparse for PHP — do not trust callers/callees for facades or dynamic dispatch; prefer routes/, Models, Form Requests, and `docs` over impact traces.",
+	},
+	"flask": {
+		"Prefer application factories and blueprints; keep config outside the app module; use Flask's test client for route checks.",
+		"Use the application/request context correctly; register blueprints; don't share mutable globals across requests.",
+		"Decorator-registered routes may not appear as call-graph edges — query the view function name and open the blueprint module.",
+	},
+	"axum": {
+		"Route handlers are often free functions wired via Router::route — query the handler name, not only `Router`.",
+		"Extractors (State, Path, Json) are type-driven; prefer reading the handler signature over inventing middleware.",
+	},
+	"express": {
+		"Public APIs are often prototype assigns indexed as dotted aliases (app.use, res.send, exports.Router) under lib/ — prefer lib/ over examples/ and pass path= when ambiguous.",
+	},
+	"fastapi": {
+		"Endpoints use Pydantic models for I/O and Depends() for dependency injection; use async def for async I/O paths.",
+		"Depends / include_router edges can be sparse — prefer param_functions.Depends and applications.include_router with path=, and use docs for DI patterns.",
+	},
+	"go": {
+		"Methods are stored as bare names (Use, Get, Listen) with recv on the hit — query Type.Method (e.g. App.Use) or pass path=/sym: id when names collide.",
+	},
+	"node": {
+		"Prefer package main/lib entrypoints over examples/ and test/acceptance for orientation; use path= when symbol names collide.",
 	},
 	"filament": {
 		"Filament v3 defines forms/tables in the Resource class; v4+ splits them into separate Schema/Table files (Schemas/XForm.php, Tables/XTable.php) — match the installed major version before editing.",
@@ -81,31 +107,49 @@ var frameworkGotchas = map[string][]string{
 	"django": {
 		"Run `python manage.py makemigrations && migrate` after model changes; never edit an applied migration. Respect the settings module split and CSRF on POST.",
 	},
-	"flask": {
-		"Use the application/request context correctly; register blueprints; don't share mutable globals across requests.",
-	},
-	"fastapi": {
-		"Endpoints use Pydantic models for I/O and Depends() for dependency injection; use async def for async I/O paths.",
+	"django-rest-framework": {
+		"DRF views inherit APIView/ViewSet; serialize with Serializer/ModelSerializer; prefer routers + viewsets over ad-hoc function views when extending the library.",
+		"Permission/authentication classes and parser/renderer settings drive request handling — check DEFAULT_* settings before inventing middleware.",
+		"Call graphs for dynamic dispatch can be sparse — orient via APIView/Serializer hubs and rest_framework/ package paths.",
 	},
 	"rails": {
 		"Run `rails db:migrate` after schema changes; use strong params; follow convention-over-configuration (don't fight the file layout).",
 	},
+	"sinatra": {
+		"Routes are DSL methods (get/post/put/delete) on Sinatra::Base — query the route helper or the Base subclass, not a missing controller layer.",
+		"Prefer modular style (subclass Sinatra::Base) over classic for libraries; helpers/extensions live in separate modules.",
+		"Ruby require/call graphs are sparse — use imports edges and lib/ paths; don't trust empty impact as 'safe to change'.",
+	},
+	"remix": {
+		"Remix (and @remix-run/*) loaders/actions own server data — mutate via actions, not client fetch to invent REST. Match the package's export paths under packages/.",
+		"In monorepos, prefer packages/@remix-run/* source over demos/template for orientation; pass path= when symbol names collide.",
+	},
 	"spring-boot": {
 		"Prefer constructor injection over field @Autowired; configure via application.properties/yml; beans are singletons by default.",
+	},
+	"phoenix": {
+		"Routes live in the Router pipeline (pipe_through, scope, get/post) — prefer Phoenix.Router hubs over ad-hoc Plug guesses.",
+		"Channels use join/handle_in/handle_out; LiveView assigns are the source of truth — avoid inventing REST controllers for LiveView apps.",
+		"mix.exs + lib/ define the Elixir stack even when assets/package.json is present for the JS client.",
 	},
 }
 
 // languageGotchas maps a language id to its pitfalls (used when no framework, or
 // as a baseline alongside the framework rules).
 var languageGotchas = map[string][]string{
-	"go":         {"Handle every returned error explicitly (don't discard with _ unless intentional); run `go vet` + gofmt; pass context.Context through call chains; test with -race for concurrent code."},
+	"go":         {"Handle every returned error explicitly (don't discard with _ unless intentional); run `go vet` + gofmt; pass context.Context through call chains; test with -race for concurrent code.", "Methods are stored as bare names (Use, Get, Listen) with recv on the hit — query Type.Method (e.g. App.Use) or pass path=/sym: id when names collide."},
 	"rust":       {"Respect ownership/borrowing and lifetimes; prefer Result over panic!/unwrap in library code; run `cargo clippy` and `cargo check`."},
 	"python":     {"Work inside a virtualenv; pin/declare deps; add type hints and run ruff/mypy; avoid mutable default arguments."},
-	"php":        {"Escape output and validate input; use prepared statements for SQL; follow PSR-12 + the project's autoloading (composer)."},
-	"gdscript":   {"GDScript is indentation-sensitive; in Godot 4 use @export/@onready/@tool annotations and typed vars; get nodes via $Path or get_node(); connect signals in code or the editor."},
-	"csharp":     {"Unity: use the MonoBehaviour lifecycle (Awake/Start/Update); don't allocate or GetComponent in Update; expose fields with [SerializeField]; scene/prefab changes are data, not code."},
+	"php":        {"Escape output and validate input; use prepared statements for SQL; follow PSR-12 + the project's autoloading (composer).", "Call graphs are sparse for PHP — do not trust callers/callees for facades; prefer routes/models/Form Requests + docs."},
+	"javascript": {"Prefer package main/lib entrypoints over examples/ and test/acceptance for orientation; use path= when symbol names collide."},
+	"gdscript":   {"GDScript is indentation-sensitive; in Godot 4 use @export/@onready/@tool annotations and typed vars; get nodes via $Path or get_node(); connect signals in code or the editor.", "Call graphs come from line-based call extraction — prefer path= when names collide (_ready is ubiquitous)."},
+	"csharp":     {"Prefer async/await over blocking waits; dispose IDisposable; avoid catching Exception broadly; keep public APIs nullable-aware when nullable reference types are enabled."},
 	"cpp":        {"Unreal: use UPROPERTY/UFUNCTION reflection macros and the Unreal types (FString/TArray); respect the Blueprint↔C++ boundary; regenerate project files after adding classes."},
 	"typescript": {"Enable/respect `strict`; avoid `any` (use `unknown` + narrowing); don't over-annotate what's inferred; prefer type-only imports where the config requires them."},
+	"ruby":       {"Call/require graphs can be sparse — prefer imports edges and explicit path=; don't treat empty impact as proof a change is isolated."},
+	"java":       {"Prefer constructor injection in Spring; keep packages coherent; watch classpath/resource loading differences between tests and main."},
+	"kotlin":     {"Ktor/Kotlin multiplatform: prefer commonMain sources over platform stubs; extension functions are indexed under the function name (not the receiver type)."},
+	"elixir":     {"Modules are aliases (Phoenix.Router); defs are def/defp — query the module alias, not a missing class hierarchy."},
 }
 
 // libraryGotchas maps a declared dependency (by name) to pitfalls — for tools that
@@ -124,6 +168,10 @@ var libraryGotchas = map[string][]string{
 	"livewire/livewire":     {"Livewire state lives in public, JSON-serializable properties bound with wire:model; actions are public methods. The whole render() re-runs on each request."},
 	"@tanstack/react-query": {"React Query owns server state — don't duplicate it in useState; mutations should invalidate the relevant query keys."},
 	"electron":              {"Keep Node/Electron APIs in the main/preload process; the renderer should use contextBridge over nodeIntegration for security."},
+	"express":               {"Public APIs are often prototype assigns indexed as dotted aliases (app.use, res.send, exports.Router) under lib/ — prefer lib/ over examples/ and pass path= when ambiguous."},
+	"fastapi":               {"Depends / include_router edges can be sparse — prefer param_functions.Depends and applications.include_router with path=, and use docs for DI patterns."},
+	"axum":                  {"Route handlers are often free functions wired via Router::route — query the handler name, not only Router. Prefer reading extractor types on the handler signature."},
+	"flask":                 {"Decorator-registered routes may not appear as call-graph edges — query the view function name and open the blueprint module."},
 }
 
 // gotchasFor assembles the curated pitfalls for a resolved profile: framework

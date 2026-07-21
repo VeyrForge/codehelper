@@ -171,3 +171,13 @@ func TestLoadOverridesBestEffort(t *testing.T) {
 		t.Errorf("no files should yield no entries, got %+v", got)
 	}
 }
+
+func TestResolveFastAPIEcosystemIsPip(t *testing.T) {
+	r := Resolve("fastapi", "")
+	if r.Origin != "curated" {
+		t.Fatalf("origin=%q want curated", r.Origin)
+	}
+	if r.Ecosystem != "pip" {
+		t.Fatalf("ecosystem=%q want pip (not npm)", r.Ecosystem)
+	}
+}

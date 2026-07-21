@@ -82,15 +82,23 @@ func getBrowser(ctx context.Context) (*rod.Browser, error) {
 // follow each click/keystroke. Only applied when Headed and no explicit SlowMoMS.
 const defaultHeadedSlowMo = 650 * time.Millisecond
 
+// defaultPauseOnFail is how long a headed browser stays open after a failed step
+// when PauseOnFail is set (so a human can see the failure state).
+const defaultPauseOnFail = 3 * time.Second
+
 // launchHeaded starts a fresh VISIBLE browser for one capture (not the shared
 // headless singleton) so the user can watch the agent drive the page. It is
 // closed by the returned func after the capture. SlowMotion inserts a delay
 // before every control action so clicks/inputs are perceptible; we deliberately
 // do NOT enable rod's Trace(), which logs to stdout and would corrupt the MCP
 // JSON-RPC stream — the in-page highlight (injectHighlighter) shows where each
-// action lands instead. Headed needs a graphical display; the error is surfaced
-// with a hint when there isn't one (SSH/CI → use headless).
+// action lands instead. Headed needs a graphical display; we fail fast when
+// DISPLAY/WAYLAND_DISPLAY is missing and wrap Chromium launch errors with the
+// same recovery hint (SSH/CI → xvfb-run or headed=false).
 func launchHeaded(ctx context.Context, slowMo time.Duration) (*rod.Browser, func(), error) {
+	if !DisplayAvailable() {
+		return nil, nil, ErrHeadedNoDisplay()
+	}
 	bin, err := EnsureBrowser(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("provision browser: %w", err)
@@ -102,14 +110,14 @@ func launchHeaded(ctx context.Context, slowMo time.Duration) (*rod.Browser, func
 		Set("no-sandbox").
 		Launch()
 	if err != nil {
-		return nil, nil, fmt.Errorf("launch headed browser (needs a graphical display — over SSH/CI drop headed for headless): %w", err)
+		return nil, nil, fmt.Errorf("launch headed browser: %v — %s", err, HeadedUnavailableHint())
 	}
 	b := rod.New().ControlURL(ctrl)
 	if slowMo > 0 {
 		b = b.SlowMotion(slowMo)
 	}
 	if err := b.Connect(); err != nil {
-		return nil, nil, fmt.Errorf("connect headed browser: %w", err)
+		return nil, nil, fmt.Errorf("connect headed browser: %w — %s", err, HeadedUnavailableHint())
 	}
 	return b, func() { _ = b.Close() }, nil
 }
@@ -150,6 +158,14 @@ func CaptureBrowser(ctx context.Context, opts BrowserOptions) (*BrowserResult, e
 	}
 	defer func() { _ = page.Close() }()
 	page = page.Context(ctx)
+
+	session := strings.TrimSpace(opts.Session)
+	if opts.SessionClear && session != "" {
+		ClearBrowserSession(session)
+	}
+	if err := applySessionCookies(page, session); err != nil {
+		return nil, fmt.Errorf("apply session cookies: %w", err)
+	}
 
 	dev, ok := ResolveDevice(opts.Device)
 	if !ok {
@@ -247,7 +263,16 @@ func CaptureBrowser(ctx context.Context, opts BrowserOptions) (*BrowserResult, e
 		_ = err
 	}
 
-	if opts.WaitSelector != "" {
+	if opts.WaitHydrate {
+		if err := waitHydrate(page, opts.WaitSelector, opts.WaitMS); err != nil {
+			mu.Lock()
+			res.PageErrors = append(res.PageErrors, fmt.Sprintf("wait_hydrate: %v", err))
+			mu.Unlock()
+		}
+		if opts.Trace {
+			res.Trace = append(res.Trace, TraceEvent{AtMS: time.Since(start).Milliseconds(), Kind: "hydrate", Detail: "network idle + DOM stable"})
+		}
+	} else if opts.WaitSelector != "" {
 		if _, err := page.Element(opts.WaitSelector); err != nil {
 			mu.Lock()
 			res.PageErrors = append(res.PageErrors, fmt.Sprintf("wait_selector %q not found: %v", opts.WaitSelector, err))
@@ -256,18 +281,21 @@ func CaptureBrowser(ctx context.Context, opts BrowserOptions) (*BrowserResult, e
 	} else {
 		_ = page.WaitDOMStable(300*time.Millisecond, 0.2)
 	}
-	if opts.WaitMS > 0 {
+	if opts.WaitMS > 0 && !opts.WaitHydrate {
 		select {
 		case <-time.After(time.Duration(opts.WaitMS) * time.Millisecond):
 		case <-ctx.Done():
 		}
 	}
 	res.LoadMS = time.Since(start).Milliseconds()
+	if opts.Trace {
+		res.Trace = append(res.Trace, TraceEvent{AtMS: res.LoadMS, Kind: "navigate", Detail: opts.URL})
+	}
 
 	// Interactions run BEFORE we read text / capture, so everything below reflects
 	// the post-interaction state.
 	if len(opts.Actions) > 0 {
-		res.ActionLog = runActions(page, opts.Actions, opts, res, res.Format, dev.Scale)
+		res.ActionLog = runActions(page, opts.Actions, opts, res, res.Format, dev.Scale, start)
 	}
 
 	// The final read+capture gets its own fresh deadline so a slow/failed wait
@@ -296,8 +324,17 @@ func CaptureBrowser(ctx context.Context, opts BrowserOptions) (*BrowserResult, e
 		}
 	}
 	res.Headed = opts.Headed
-	if opts.Outline {
+	actionsFailed := ActionsFailed(res.ActionLog)
+	// On assert/action failure, always collect outline + snapshot so the debug
+	// pack is complete even when the caller forgot those flags.
+	if opts.Outline || actionsFailed {
 		res.Outline = collectOutline(cap)
+	}
+	if opts.Snapshot || snapshotRequested(opts.Actions) || actionsFailed {
+		res.Snapshot = collectSnapshot(cap)
+		if opts.Trace {
+			res.Trace = append(res.Trace, TraceEvent{AtMS: time.Since(start).Milliseconds(), Kind: "snapshot", Detail: fmt.Sprintf("%d lines", strings.Count(res.Snapshot, "\n")+1)})
+		}
 	}
 
 	// Screenshot last, so it reflects the settled page. Splitting a long full page
@@ -330,9 +367,16 @@ func CaptureBrowser(ctx context.Context, opts BrowserOptions) (*BrowserResult, e
 		}
 	}
 
+	saveSessionCookies(page, session)
+
 	cancel()  // stop the event goroutine
 	mu.Lock() // settle any in-flight handler before returning the slices
 	defer mu.Unlock()
+
+	// Structured failure pack (in-memory always; on-disk when WriteDebugPack/dir set).
+	if err := AttachFailureArtifacts(res, opts); err != nil {
+		res.PageErrors = append(res.PageErrors, fmt.Sprintf("debug_pack: %v", err))
+	}
 	return res, nil
 }
 
@@ -341,12 +385,10 @@ const maxActionPreviews = 16
 
 // runActions executes interaction steps in order, stopping at the first failure
 // (so the post-capture screenshot shows exactly where a flow got stuck). It
-// returns a one-line log per step for the report. When opts.PreviewActions is
-// true, a viewport screenshot is captured after each step (including the failing
-// one) so the agent can see clicks, fills, and typing as they happen. When
-// opts.Headed is set, each step also flashes a labelled box on its target element
-// so a human watching the visible browser sees exactly where the action lands.
-func runActions(page *rod.Page, actions []Action, opts BrowserOptions, res *BrowserResult, format string, scale float64) []string {
+// returns a one-line log per step for the report. Failed steps always attach a
+// viewport screenshot (LLM debug surface) even when PreviewActions is off.
+// When opts.Headed is set, each step also flashes a labelled box on its target.
+func runActions(page *rod.Page, actions []Action, opts BrowserOptions, res *BrowserResult, format string, scale float64, started time.Time) []string {
 	log := make([]string, 0, len(actions))
 	headed := opts.Headed
 	preview := opts.PreviewActions
@@ -355,22 +397,58 @@ func runActions(page *rod.Page, actions []Action, opts BrowserOptions, res *Brow
 	previewOpts.Selector = ""
 	previewOpts.ClipY = 0
 	previewOpts.ClipHeight = 0
+	if started.IsZero() {
+		started = time.Now()
+	}
 
 	for i, a := range actions {
-		// In a visible browser, flash a labelled box on the target BEFORE acting so
-		// the user sees exactly where the click/input lands. SlowMotion then paces
-		// the real action a beat later. No-op (and cheap) in headless.
-		if headed && a.Selector != "" {
-			_, _ = page.Eval(`(sel, label) => window.__chHi && window.__chHi(sel, label)`, a.Selector, actionLabel(a))
+		info, used, err := runAction(page, a, opts)
+		hiSel := used
+		if hiSel == "" {
+			hiSel = a.Selector
 		}
-		if err := runAction(page, a); err != nil {
+		if headed && hiSel != "" && !strings.Contains(hiSel, " ") {
+			_, _ = page.Eval(`(sel, label) => window.__chHi && window.__chHi(sel, label)`, hiSel, actionLabel(a))
+		}
+		at := time.Since(started).Milliseconds()
+		if err != nil {
 			log = append(log, fmt.Sprintf("step %d %s — FAILED: %v", i+1, actionLabel(a), err))
-			if preview && len(res.ActionPreviews) < maxActionPreviews {
+			if opts.Trace {
+				res.Trace = append(res.Trace, TraceEvent{AtMS: at, Kind: "fail", Detail: actionLabel(a) + ": " + err.Error()})
+			}
+			// Always capture a failure shot so the agent can see where it stuck.
+			if len(res.ActionPreviews) < maxActionPreviews {
 				appendActionPreview(page, res, i+1, actionLabel(a)+" — FAILED", previewOpts, format, scale)
+				res.FailureShot = true
+			}
+			if headed && opts.PauseOnFail {
+				pause := time.Duration(opts.PauseOnFailMS) * time.Millisecond
+				if pause <= 0 {
+					pause = defaultPauseOnFail
+				}
+				time.Sleep(pause)
 			}
 			break
 		}
-		log = append(log, fmt.Sprintf("step %d %s — ok", i+1, actionLabel(a)))
+		line := fmt.Sprintf("step %d %s — ok", i+1, actionLabel(a))
+		if info != "" {
+			line += " (" + info + ")"
+		}
+		if used != "" && (a.Role != "" || a.TestID != "" || strings.HasPrefix(strings.ToLower(a.Selector), "role:") || strings.HasPrefix(strings.ToLower(a.Selector), "testid:") || strings.Contains(used, "(healed)")) {
+			line += " [" + used + "]"
+		}
+		log = append(log, line)
+		if opts.Trace {
+			kind := "action"
+			if strings.HasPrefix(strings.ToLower(a.Do), "wait") {
+				kind = "wait"
+			}
+			detail := actionLabel(a)
+			if strings.Contains(used, "(healed)") {
+				res.Trace = append(res.Trace, TraceEvent{AtMS: at, Kind: "heal", Detail: used})
+			}
+			res.Trace = append(res.Trace, TraceEvent{AtMS: at, Kind: kind, Detail: detail})
+		}
 		if preview && len(res.ActionPreviews) < maxActionPreviews {
 			appendActionPreview(page, res, i+1, actionLabel(a), previewOpts, format, scale)
 		}
@@ -392,112 +470,215 @@ func appendActionPreview(page *rod.Page, res *BrowserResult, step int, label str
 // budget (which would also starve the final screenshot).
 const actionElemTimeout = 10 * time.Second
 
-func runAction(page *rod.Page, a Action) error {
-	// elem looks up the action's selector with a bounded per-step timeout.
-	elem := func() (*rod.Element, error) {
-		d := actionElemTimeout
-		if a.MS > 0 {
-			d = time.Duration(a.MS) * time.Millisecond
+func snapshotRequested(actions []Action) bool {
+	for _, a := range actions {
+		switch strings.ToLower(strings.TrimSpace(a.Do)) {
+		case "snapshot", "aria_snapshot", "a11y_snapshot":
+			return true
 		}
-		return page.Timeout(d).Element(a.Selector)
+	}
+	return false
+}
+
+// runAction performs one step. info is optional detail for the action log; used
+// is the locator string that matched (for highlight / heal reporting).
+func runAction(page *rod.Page, a Action, opts BrowserOptions) (info, used string, err error) {
+	needEl := func() (*rod.Element, string, error) {
+		return findElement(page, a)
 	}
 	switch strings.ToLower(strings.TrimSpace(a.Do)) {
 	case "click":
-		el, err := elem()
-		if err != nil {
-			return err
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
 		}
-		return el.Click(proto.InputMouseButtonLeft, 1)
+		return "", u, el.Click(proto.InputMouseButtonLeft, 1)
 	case "type":
-		el, err := elem()
-		if err != nil {
-			return err
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
 		}
-		return el.Input(a.Text)
+		return "", u, el.Input(a.Text)
 	case "fill":
-		el, err := elem()
-		if err != nil {
-			return err
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
 		}
-		_ = el.SelectAllText() // replace existing value rather than append
-		return el.Input(a.Text)
+		_ = el.SelectAllText()
+		return "", u, el.Input(a.Text)
+	case "select", "select_option":
+		if strings.TrimSpace(a.Text) == "" {
+			return "", "", fmt.Errorf("select requires text= (option label or value)")
+		}
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
+		}
+		if e = el.Select([]string{a.Text}, true, rod.SelectorTypeText); e != nil {
+			// Fallback: value CSS / regex.
+			if e2 := el.Select([]string{`[value="` + strings.ReplaceAll(a.Text, `"`, `\\"`) + `"]`}, true, rod.SelectorTypeCSSSector); e2 == nil {
+				return "by value", u, nil
+			}
+			return "", u, e
+		}
+		return "", u, nil
 	case "hover":
-		el, err := elem()
-		if err != nil {
-			return err
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
 		}
-		return el.Hover()
+		return "", u, el.Hover()
 	case "press":
 		k, ok := keyByName(a.Key)
 		if !ok {
-			return fmt.Errorf("unknown key %q", a.Key)
+			return "", "", fmt.Errorf("unknown key %q", a.Key)
 		}
-		return page.Keyboard.Press(k)
+		return "", "", page.Keyboard.Press(k)
 	case "scroll":
-		if a.Selector != "" {
-			el, err := elem()
-			if err != nil {
-				return err
+		if a.Selector != "" || a.Role != "" || a.TestID != "" || a.Name != "" {
+			el, u, e := needEl()
+			if e != nil {
+				return "", u, e
 			}
-			return el.ScrollIntoView()
+			return "", u, el.ScrollIntoView()
 		}
-		return page.Mouse.Scroll(0, float64(a.Y), 1)
+		return "", "", page.Mouse.Scroll(0, float64(a.Y), 1)
 	case "wait":
-		if a.Selector != "" {
-			_, err := elem()
-			return err
+		if a.Selector != "" || a.Role != "" || a.TestID != "" || a.Name != "" {
+			_, u, e := needEl()
+			return "", u, e
 		}
 		ms := a.MS
 		if ms <= 0 {
 			ms = 500
 		}
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		return nil
-	case "assert":
-		// The element must exist; if Text is given, its text must contain it.
-		el, err := elem()
-		if err != nil {
-			return fmt.Errorf("element not found")
+		return "", "", nil
+	case "wait_idle", "wait_network", "network_idle":
+		idle := a.MS
+		if idle <= 0 {
+			idle = 500
+		}
+		timeout := 15000
+		if a.Y > 0 {
+			timeout = a.Y // optional: y= as timeout_ms override for this action
+		}
+		return fmt.Sprintf("idle=%dms", idle), "", waitNetworkIdle(page, idle, timeout)
+	case "wait_hydrate", "hydrate":
+		return "", "", waitHydrate(page, a.Selector, a.MS)
+	case "navigate":
+		target, e := resolveNavigateURL(page, a.Text)
+		if e != nil {
+			return "", "", e
+		}
+		if e = page.Navigate(target); e != nil {
+			return "", "", e
+		}
+		return target, "", page.WaitLoad()
+	case "wait_nav", "wait_navigation", "wait_url":
+		ms := a.MS
+		if ms <= 0 {
+			ms = 15000
+		}
+		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
+		for {
+			pinfo, e := page.Info()
+			if e == nil {
+				if a.Text == "" || strings.Contains(pinfo.URL, a.Text) {
+					_ = page.WaitLoad()
+					return pinfo.URL, "", nil
+				}
+			}
+			if time.Now().After(deadline) {
+				got := ""
+				if pinfo, ierr := page.Info(); ierr == nil {
+					got = pinfo.URL
+				}
+				if a.Text != "" {
+					return "", "", fmt.Errorf("wait_nav: url did not contain %q (got %q)", a.Text, got)
+				}
+				return "", "", fmt.Errorf("wait_nav timeout")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	case "assert", "assert_text":
+		if strings.EqualFold(a.Do, "assert_text") && a.Text == "" {
+			return "", "", fmt.Errorf("assert_text requires text=")
+		}
+		var el *rod.Element
+		var u string
+		var e error
+		if a.Selector == "" && a.Role == "" && a.TestID == "" && a.Name == "" {
+			d := actionElemTimeout
+			if a.MS > 0 {
+				d = time.Duration(a.MS) * time.Millisecond
+			}
+			el, e = page.Timeout(d).Element("body")
+			u = "body"
+		} else {
+			el, u, e = needEl()
+		}
+		if e != nil {
+			return "", u, fmt.Errorf("element not found")
 		}
 		if a.Text == "" {
-			return nil
+			return "", u, nil
 		}
-		got, err := el.Text()
-		if err != nil {
-			return err
+		got, e := el.Text()
+		if e != nil {
+			return "", u, e
 		}
 		if !strings.Contains(got, a.Text) {
-			return fmt.Errorf("text %q not found (got %q)", a.Text, capRunes(strings.Join(strings.Fields(got), " "), 80))
+			return "", u, fmt.Errorf("text %q not found (got %q)", a.Text, capRunes(strings.Join(strings.Fields(got), " "), 80))
 		}
-		return nil
+		return "", u, nil
+	case "upload", "set_input_files", "setinputfiles", "attach":
+		paths, e := ResolveUploadPaths(a.Text, opts.WorkspaceRoot, opts.UploadAllowDirs)
+		if e != nil {
+			return "", "", e
+		}
+		el, u, e := needEl()
+		if e != nil {
+			return "", u, e
+		}
+		return fmt.Sprintf("%d file(s)", len(paths)), u, el.SetFiles(paths)
+	case "snapshot", "aria_snapshot", "a11y_snapshot":
+		// Collected after actions in CaptureBrowser when Snapshot/action requested.
+		return "deferred to report", "", nil
+	case "storage_set", "localstorage_set":
+		key := strings.TrimSpace(a.Key)
+		if key == "" {
+			key = strings.TrimSpace(a.Selector)
+		}
+		if key == "" {
+			return "", "", fmt.Errorf("storage_set requires key= (or selector as key) and text=value")
+		}
+		_, e := page.Eval(`(k, v) => { localStorage.setItem(k, v); return true; }`, key, a.Text)
+		return key, "", e
+	case "storage_get", "localstorage_get":
+		key := strings.TrimSpace(a.Key)
+		if key == "" {
+			key = strings.TrimSpace(a.Selector)
+		}
+		if key == "" {
+			return "", "", fmt.Errorf("storage_get requires key= (or selector as key)")
+		}
+		obj, e := page.Eval(`(k) => localStorage.getItem(k)`, key)
+		if e != nil {
+			return "", "", e
+		}
+		val := obj.Value.Str()
+		if obj.Value.Nil() {
+			val = "<null>"
+		}
+		return fmt.Sprintf("%s=%q", key, capRunes(val, 120)), "", nil
+	case "storage_clear", "localstorage_clear":
+		_, e := page.Eval(`() => { localStorage.clear(); return true; }`)
+		return "", "", e
+	case "clear_cookies", "cookie_clear":
+		return "", "", clearPageCookies(page)
 	default:
-		return fmt.Errorf("unknown action %q", a.Do)
-	}
-}
-
-func actionLabel(a Action) string {
-	switch strings.ToLower(a.Do) {
-	case "type", "fill":
-		return fmt.Sprintf("%s %q=%q", a.Do, a.Selector, a.Text)
-	case "press":
-		return fmt.Sprintf("press %s", a.Key)
-	case "scroll":
-		if a.Selector != "" {
-			return "scroll to " + a.Selector
-		}
-		return fmt.Sprintf("scroll y=%d", a.Y)
-	case "wait":
-		if a.Selector != "" {
-			return "wait for " + a.Selector
-		}
-		return fmt.Sprintf("wait %dms", a.MS)
-	case "assert":
-		if a.Text != "" {
-			return fmt.Sprintf("assert %q contains %q", a.Selector, a.Text)
-		}
-		return fmt.Sprintf("assert %q exists", a.Selector)
-	default:
-		return fmt.Sprintf("%s %s", a.Do, a.Selector)
+		return "", "", fmt.Errorf("unknown action %q", a.Do)
 	}
 }
 
@@ -629,6 +810,7 @@ const outlineJS = `() => {
     if (!s || seen[s]) continue;
     seen[s] = 1;
     out.push({
+      ref: 'e'+(out.length+1),
       selector: s,
       role: roleFor(el),
       name: (nameFor(el)||'').replace(/\s+/g,' ').slice(0,80),

@@ -80,8 +80,8 @@ func hotspotsHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 		centrality := map[string]int{}
 		for _, s := range syms {
-			if review.IsTestPath(s.Path) {
-				continue // hotspots target production code to refactor, not test files
+			if review.IsTestPath(s.Path) || review.IsSecondaryNoisePath(s.Path) {
+				continue // hotspots target production code, not tests/demos/fixtures
 			}
 			if d := indeg[s.ID]; d > 0 {
 				centrality[s.Path] += d

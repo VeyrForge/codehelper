@@ -127,7 +127,7 @@ type learningConfig struct {
 
 func defaultLearningConfig() learningConfig {
 	return learningConfig{
-		Enabled:           false,
+		Enabled:           true,
 		Mode:              "approval",
 		ProjectScopedOnly: true,
 		MemoryDir:         ".codehelper/memory",

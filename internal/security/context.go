@@ -62,13 +62,13 @@ var builtinSecurityRules = []struct {
 	{
 		rule:     "hardcoded-secret",
 		severity: "high",
-		pattern:  regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*["'][A-Za-z0-9+/=_\-]{12,}["']`),
+		pattern:  regexp.MustCompile(`(?i)(api[_-]?key|secret|password|token|sk_live_|sk_test_)\s*:?=\s*["'][^"']{8,}["']`),
 		message:  "Possible hard-coded credential; move it to an environment variable or secret store.",
 	},
 	{
 		rule:     "sql-string-concat",
 		severity: "high",
-		pattern:  regexp.MustCompile(`(?i)(select|insert|update|delete)\s+.*['"]\s*\.\s*\$?\w+|['"]\s*\+\s*req\.|f["']\s*(select|insert|update|delete)\b.*\{`),
+		pattern:  regexp.MustCompile(`(?i)((select|insert|update|delete)\b[^;\n]{0,120}(['"]\s*\+|['"]\s*\.|f['"][^'"]*\{)|['"]\s*\+\s*(req|request|params|input|query)\.|\$\{[^}]+\}.*(select|insert|update|delete)|(select|insert|update|delete).*\$\{)`),
 		message:  "SQL built from string concatenation/interpolation; use parameterized queries.",
 	},
 	{

@@ -4,7 +4,7 @@
 
 Codehelper indexes git repositories on your machine, builds a symbol and call graph, and exposes **60+ MCP tools** so Cursor, Claude Code, Codex, and other MCP clients can search, understand, and safely change *your* code — without uploading the whole repo to a cloud model.
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.0.1-blue)](VERSION)
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-server-purple)](https://modelcontextprotocol.io/)
 [![License: Source-Available](https://img.shields.io/badge/license-Source--Available-orange)](LICENSE)
@@ -41,7 +41,7 @@ git clone https://github.com/VeyrForge/codehelper.git && cd codehelper
 npm run build
 ```
 
-Prebuilt **3.0.0** bundles (Linux, macOS, Windows) include `codehelper`, MCP server, **`ge` 1.0.0**, and **`greencompress` 1.0.0** on [GitHub Releases](https://github.com/VeyrForge/codehelper/releases).
+Prebuilt **3.0.1** bundles (Linux, macOS, Windows) include `codehelper`, MCP server, **`ge` 1.0.0**, and **`greencompress` 1.0.0** on [GitHub Releases](https://github.com/VeyrForge/codehelper/releases).
 
 **Updates:** `codehelper upgrade` downloads the latest release from [VeyrForge/codehelper](https://github.com/VeyrForge/codehelper). `codehelper update` rebuilds from a local git checkout.
 

@@ -103,9 +103,12 @@ func TestMinimalToolSet(t *testing.T) {
 		}
 	}
 	// The differentiators that make a trimmed surface still worth using.
-	for _, n := range []string{"trace", "impact", "test_impact", "find_implementations", "diagnostics"} {
+	for _, n := range []string{
+		"trace", "impact", "test_impact", "find_implementations", "diagnostics",
+		"apply_patch_workspace_file", "review_diff", "finish_check", "change_kit",
+	} {
 		if !seen[n] {
-			t.Errorf("MinimalToolSet must keep navigation differentiator %q", n)
+			t.Errorf("MinimalToolSet must keep lifecycle tool %q", n)
 		}
 	}
 	if len(MinimalToolSet) >= 40 {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -422,5 +423,351 @@ func TestCaptureBrowserMobileViewportAndPNG(t *testing.T) {
 	}
 	if !ImageMagicMatches(res.Image, FormatPNG) {
 		t.Error("expected valid PNG bytes when format=png")
+	}
+}
+
+const wpLoginPage = `<!doctype html><html><body>
+<form id="loginform">
+<input id="user_login" name="log" type="text">
+<input id="user_pass" name="pwd" type="password">
+<input id="wp-submit" type="submit" value="Log In">
+</form>
+<div id="wpadminbar" style="display:none">admin</div>
+<script>
+document.getElementById("loginform").onsubmit = function(e){
+  e.preventDefault();
+  if (document.getElementById("user_login").value === "admin" &&
+      document.getElementById("user_pass").value === "s3cret") {
+    document.getElementById("wpadminbar").style.display = "block";
+  }
+};
+</script></body></html>`
+
+func TestCaptureBrowserWPLoginRecipe(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(wpLoginPage))
+	}))
+	defer srv.Close()
+
+	acts := WPLoginActions("admin", "s3cret")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{URL: srv.URL, Actions: acts})
+	if err != nil {
+		t.Fatalf("WP login recipe: %v", err)
+	}
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("WP login failed: %v", res.ActionLog)
+		}
+		if strings.Contains(l, "s3cret") {
+			t.Fatalf("password leaked in action log: %s", l)
+		}
+	}
+	if !strings.Contains(res.Text, "admin") {
+		t.Errorf("expected admin bar visible text, got %q", res.Text)
+	}
+}
+
+func TestCaptureBrowserNavigateWaitNavAssertText(t *testing.T) {
+	requireBrowser(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<!doctype html><html><body><a id="go" href="/next">go</a></body></html>`))
+	})
+	mux.HandleFunc("/next", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<!doctype html><html><body><h1 id="title">Plugins</h1><div id="the-list">ok</div></body></html>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL: srv.URL,
+		Actions: []Action{
+			{Do: "navigate", Text: "/next"},
+			{Do: "wait_nav", Text: "/next", MS: 5000},
+			{Do: "assert_text", Selector: "#title", Text: "Plugins"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("actions failed: %v", res.ActionLog)
+		}
+	}
+	if !strings.Contains(res.FinalURL, "/next") {
+		t.Errorf("final url=%q want /next", res.FinalURL)
+	}
+}
+
+func TestCaptureBrowserSessionCookieReuse(t *testing.T) {
+	requireBrowser(t)
+	ClearBrowserSession("")
+	t.Cleanup(func() { ClearBrowserSession("") })
+
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if c, err := r.Cookie("qa"); err == nil && c.Value == "1" {
+			_, _ = w.Write([]byte(`<!doctype html><body id="authed">logged-in</body>`))
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "qa", Value: "1", Path: "/"})
+		_, _ = w.Write([]byte(`<!doctype html><body id="login">please-login</body>`))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	first, err := CaptureBrowser(ctx, BrowserOptions{
+		URL:     srv.URL,
+		Session: "qa-sess",
+		Actions: []Action{{Do: "assert", Selector: "#login"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range first.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("first capture: %v", first.ActionLog)
+		}
+	}
+
+	second, err := CaptureBrowser(ctx, BrowserOptions{
+		URL:     srv.URL,
+		Session: "qa-sess",
+		Actions: []Action{{Do: "assert_text", Selector: "#authed", Text: "logged-in"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range second.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("session reuse failed (cookie not applied): %v", second.ActionLog)
+		}
+	}
+	if hits < 2 {
+		t.Fatalf("expected at least 2 hits, got %d", hits)
+	}
+}
+
+const agentPage = `<!doctype html><html><body>
+<label for="email">Email</label>
+<input id="email" data-testid="email" />
+<select id="plan" data-testid="plan">
+  <option value="free">Free</option>
+  <option value="pro">Pro</option>
+</select>
+<button id="go" role="button">Place order</button>
+<div id="out"></div>
+<script>
+document.getElementById('go').onclick = function(){
+  var e = document.getElementById('email').value;
+  var p = document.getElementById('plan').value;
+  document.getElementById('out').textContent = 'ok:' + e + ':' + p;
+  localStorage.setItem('last', e);
+};
+</script></body></html>`
+
+func TestCaptureBrowserLocatorsSelectSnapshotStorage(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(agentPage))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL:         srv.URL,
+		Snapshot:    true,
+		Trace:       true,
+		WaitHydrate: true,
+		Actions: []Action{
+			{Do: "fill", TestID: "email", Text: "a@b.com"},
+			{Do: "select", TestID: "plan", Text: "Pro"},
+			{Do: "click", Role: "button", Name: "Place order"},
+			{Do: "wait_idle", MS: 200},
+			{Do: "assert_text", Selector: "#out", Text: "ok:a@b.com:pro"},
+			{Do: "storage_get", Key: "last"},
+			{Do: "snapshot"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CaptureBrowser: %v", err)
+	}
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("actions failed: %v", res.ActionLog)
+		}
+	}
+	if !strings.Contains(res.Snapshot, "button") {
+		t.Errorf("snapshot missing button: %q", res.Snapshot)
+	}
+	if len(res.Trace) == 0 {
+		t.Error("expected trace events")
+	}
+	foundStorage := false
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "storage_get") && strings.Contains(l, "a@b.com") {
+			foundStorage = true
+		}
+	}
+	if !foundStorage {
+		t.Errorf("expected storage_get value in log: %v", res.ActionLog)
+	}
+}
+
+func TestCaptureBrowserFailureShotAlways(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(agentPage))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL: srv.URL,
+		Actions: []Action{
+			{Do: "click", Selector: "#missing", MS: 500},
+		},
+		TimeoutSec: 10,
+	})
+	if err != nil {
+		t.Fatalf("capture should succeed with failed action: %v", err)
+	}
+	if !res.FailureShot {
+		t.Fatal("expected FailureShot")
+	}
+	if len(res.ActionPreviews) == 0 || len(res.ActionPreviews[0].Image) == 0 {
+		t.Fatal("expected failure screenshot bytes")
+	}
+}
+
+func TestCaptureBrowserRoleHealFromBadCSS(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(agentPage))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL: srv.URL,
+		Actions: []Action{
+			{Do: "fill", Selector: "#does-not-exist", Name: "Email", Text: "x@y.z", MS: 800},
+			{Do: "click", Role: "button", Name: "Place order"},
+			{Do: "assert_text", Selector: "#out", Text: "ok:x@y.z:free"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healed := false
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("expected heal success: %v", res.ActionLog)
+		}
+		if strings.Contains(l, "healed") {
+			healed = true
+		}
+	}
+	if !healed {
+		t.Logf("action log (heal may be silent if name path won first): %v", res.ActionLog)
+	}
+}
+
+func TestCaptureBrowserOutlineRefsAndAction(t *testing.T) {
+	requireBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(agentPage))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := CaptureBrowser(ctx, BrowserOptions{URL: srv.URL, Outline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Outline) == 0 {
+		t.Fatal("expected outline elements")
+	}
+	var orderRef string
+	for _, e := range out.Outline {
+		if e.Ref == "" {
+			t.Fatalf("outline missing ref: %+v", e)
+		}
+		if e.Name == "Place order" || strings.Contains(strings.ToLower(e.Role), "button") {
+			orderRef = e.Ref
+		}
+	}
+	if orderRef == "" {
+		orderRef = out.Outline[len(out.Outline)-1].Ref
+	}
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL: srv.URL,
+		Actions: []Action{
+			{Do: "fill", TestID: "email", Text: "a@b.c"},
+			{Do: "click", Selector: "ref:" + orderRef},
+			{Do: "assert_text", Selector: "#out", Text: "ok:"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range res.ActionLog {
+		if strings.Contains(l, "FAILED") {
+			t.Fatalf("ref action failed: %v", res.ActionLog)
+		}
+	}
+}
+
+func TestCaptureBrowserHeadedIntegration(t *testing.T) {
+	requireBrowser(t)
+	if !DisplayAvailable() {
+		t.Skip("no graphical display — headed integration skipped")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`<!doctype html><title>h</title><h1 id="x">ok</h1>`))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	res, err := CaptureBrowser(ctx, BrowserOptions{
+		URL: srv.URL, Headed: true, SlowMoMS: 50, TimeoutSec: 45,
+	})
+	if err != nil {
+		t.Fatalf("headed capture: %v", err)
+	}
+	if !res.Headed {
+		t.Fatal("expected Headed=true on result")
+	}
+	if len(res.Image) == 0 {
+		t.Fatal("expected screenshot")
+	}
+}
+
+func TestCaptureBrowserHeadedNoDisplay(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "freebsd" {
+		t.Skip("DISPLAY gate is unix-specific")
+	}
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	if DisplayAvailable() {
+		t.Skip("display still available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := CaptureBrowser(ctx, BrowserOptions{URL: "http://127.0.0.1:9/", Headed: true, TimeoutSec: 3})
+	if err == nil {
+		t.Fatal("expected headed no-display error")
+	}
+	if !strings.Contains(err.Error(), "xvfb") && !strings.Contains(err.Error(), "graphical display") {
+		t.Fatalf("expected clear display hint, got: %v", err)
 	}
 }

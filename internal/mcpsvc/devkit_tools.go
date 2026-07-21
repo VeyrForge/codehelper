@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/VeyrForge/codehelper/internal/cochange"
+	"github.com/VeyrForge/codehelper/internal/graph"
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/review"
@@ -156,7 +157,14 @@ func changeKitHandler(reg *registry.Registry) server.ToolHandlerFunc {
 
 		sym, err := resolveTraceSymbol(ctx, st, repo.Name, target)
 		if err != nil || sym == nil {
-			return mcp.NewToolResultError(fmt.Sprintf("no indexed symbol named %q. Use `query` to find the exact name/sym: id, or re-index with `codehelper analyze`.", target)), nil
+			hint := fmt.Sprintf(
+				"no indexed symbol named %q. Call `query` with that name (or a shorter unique fragment) to get the exact symbol / sym: id, then retry change_kit with target=<exact name or sym:…>. If the symbol is new, run `codehelper analyze` first.",
+				target,
+			)
+			if sugg := suggestSimilarSymbols(ctx, st, repo.Name, target, 5); len(sugg) > 0 {
+				hint += " Close indexed names: " + strings.Join(sugg, ", ") + "."
+			}
+			return mcp.NewToolResultError(hint), nil
 		}
 
 		out := changeKitResponse{Target: apiSym{
@@ -221,9 +229,9 @@ func changeKitHandler(reg *registry.Registry) server.ToolHandlerFunc {
 func buildChangeChecklist(sym *types.Symbol, callers, tests int) []string {
 	var c []string
 	if callers == 0 {
-		c = append(c, "No resolved callers — safe to change the signature, but check for dynamic/reflective/cross-repo use and a textual search of the name.")
+		c = append(c, "No resolved callers/readers — check for dynamic/reflective/cross-repo use and a textual search of the name before treating this as safe.")
 	} else {
-		c = append(c, fmt.Sprintf("%d caller(s) — a signature change breaks them; update every call site below or keep it backward-compatible.", callers))
+		c = append(c, fmt.Sprintf("%d caller/reader(s) — a signature change breaks them; update every call site below or keep it backward-compatible.", callers))
 	}
 	if tests == 0 {
 		c = append(c, "No covering tests found — add a test for the new behavior before relying on it.")
@@ -391,5 +399,65 @@ func interfaceMethods(root string, sym types.Symbol) []string {
 			}
 		}
 	}
+	return out
+}
+
+// suggestSimilarSymbols returns a few nearby indexed names when change_kit misses,
+// so agents can recover without a blind re-query. Uses SymbolsByName's prefix/fuzzy
+// LIKE over camelCase fragments of the requested target.
+func suggestSimilarSymbols(ctx context.Context, st *graph.Store, repoID, target string, limit int) []string {
+	if st == nil || strings.TrimSpace(target) == "" || limit <= 0 {
+		return nil
+	}
+	frags := symbolNameFragments(target)
+	seen := map[string]bool{}
+	var out []string
+	for _, frag := range frags {
+		if len(frag) < 3 {
+			continue
+		}
+		syms, err := st.SymbolsByName(ctx, repoID, frag, limit*3)
+		if err != nil {
+			continue
+		}
+		for _, s := range syms {
+			if strings.EqualFold(s.Name, target) || seen[s.Name] {
+				continue
+			}
+			seen[s.Name] = true
+			out = append(out, fmt.Sprintf("%s @ %s:%d", s.Name, s.Path, s.LineStart))
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// symbolNameFragments yields the full name plus camelCase/snake pieces for fuzzy lookup.
+func symbolNameFragments(name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	out := []string{name}
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() >= 3 {
+			out = append(out, cur.String())
+		}
+		cur.Reset()
+	}
+	for i, r := range name {
+		if r == '_' || r == '-' || r == '.' {
+			flush()
+			continue
+		}
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			flush()
+		}
+		cur.WriteRune(r)
+	}
+	flush()
 	return out
 }

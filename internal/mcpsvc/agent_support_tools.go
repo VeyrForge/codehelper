@@ -17,7 +17,7 @@ import (
 func RegisterAgentSupportTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 	s.AddTool(mcp.NewTool("finish_check",
-		mcp.WithDescription("Hard done gate combining verify hygiene and release readiness"),
+		mcp.WithDescription("Hard done gate: verify hygiene + release readiness. Returns can_claim_done / completion_state. Claim done ONLY when can_claim_done=true. On shallow/ephemeral beds returns completion_state=abstain (structured, not error) — do not invent a green gate. Pass verify_ran=true after argv verify, or verify_abstained=true with verify_reason."),
 		mcp.WithString("base_ref", mcp.DefaultString("HEAD~1")),
 		mcp.WithBoolean("verify_ran", mcp.DefaultBool(false)),
 		mcp.WithBoolean("verify_abstained", mcp.DefaultBool(false)),
@@ -62,15 +62,21 @@ func finishCheckHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			IncludeTests: true, IncludeSecurity: true, IncludePerformance: true, IncludeContracts: true,
 		})
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			out := review.BuildFinishCheckAbstain(base, "review_diff unavailable: "+err.Error())
+			b, _ := json.MarshalIndent(out, "", "  ")
+			return mcp.NewToolResultText(string(b)), nil
 		}
 		cg, err := review.ContractGuard(ctx, stg, repo.RootPath, repo.Name, base)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			out := review.BuildFinishCheckAbstain(base, "contract_guard unavailable: "+err.Error())
+			b, _ := json.MarshalIndent(out, "", "  ")
+			return mcp.NewToolResultText(string(b)), nil
 		}
 		tg, err := review.TestGap(ctx, stg, repo.RootPath, repo.Name, base)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			out := review.BuildFinishCheckAbstain(base, "test_gap unavailable: "+err.Error())
+			b, _ := json.MarshalIndent(out, "", "  ")
+			return mcp.NewToolResultText(string(b)), nil
 		}
 		rr := review.BuildReleaseReadiness(rv, cg, tg, review.RiskScore(rv.Findings))
 		out := review.BuildFinishCheck(review.FinishCheckInput{

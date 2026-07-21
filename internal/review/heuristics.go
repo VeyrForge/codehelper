@@ -93,6 +93,38 @@ func IsTestPath(path string) bool {
 	return false
 }
 
+// IsSecondaryNoisePath reports demo/tutorial/fixture/acceptance trees that
+// drown hubs, kickoff reuse, and centrality for library monorepos. Files under
+// these paths remain indexed and searchable; orientation tools should demote them.
+func IsSecondaryNoisePath(path string) bool {
+	p := strings.ToLower(filepath.ToSlash(path))
+	for _, seg := range []string{
+		"/docs_src/", "/sample/", "/samples/", "/examples/", "/example/",
+		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
+		"/_expected/", "/benchmarking/", "/playground/", "/playgrounds/",
+		"/test/acceptance/", "/acceptance/", "/.github/",
+	} {
+		if strings.Contains(p, seg) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"docs_src/", "sample/", "samples/", "examples/", "example/",
+		"integration/", "fixtures/", "fixture/", "testdata/",
+		"benchmarking/", "playground/", "playgrounds/", "test/acceptance/",
+		".github/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	base := filepath.Base(p)
+	if strings.HasPrefix(base, "expected.") || strings.Contains(base, "_expected") {
+		return true
+	}
+	return false
+}
+
 // HasSiblingTestFile reports whether a source file already has a colocated
 // test file. We use it to avoid emitting noisy "add tests for X" actions
 // when tests already exist next to X (e.g., perf_guard.go + perf_guard_test.go

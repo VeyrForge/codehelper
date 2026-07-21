@@ -3,18 +3,23 @@ package graph
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
 	"github.com/VeyrForge/codehelper/pkg/types"
 )
 
-// CallersOf returns symbols with a calls edge pointing to calleeID.
+// CallersOf returns symbols with a calls OR reads edge pointing to calleeID.
+// Including reads catches module/factory references (common in JS/TS CJS
+// exports and similar) that never form a direct call edge — without this,
+// change_kit/context report "no callers" and agents treat edits as risk-free.
 func (s *Store) CallersOf(ctx context.Context, repoID, calleeID string) ([]types.Symbol, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT s.id, s.repo_id, s.name, s.kind, s.path, s.line_start, s.line_end, s.language, COALESCE(s.signature,''), COALESCE(s.parent_id,'')
+SELECT DISTINCT s.id, s.repo_id, s.name, s.kind, s.path, s.line_start, s.line_end, s.language, COALESCE(s.signature,''), COALESCE(s.parent_id,'')
 FROM edges e JOIN symbols s ON s.id = e.src_id AND s.repo_id = e.repo_id
-WHERE e.repo_id = ? AND e.dst_id = ? AND e.kind = ?`, repoID, calleeID, string(types.RefKindCalls))
+WHERE e.repo_id = ? AND e.dst_id = ? AND e.kind IN (?, ?)`,
+		repoID, calleeID, string(types.RefKindCalls), string(types.RefKindReads))
 	if err != nil {
 		return nil, err
 	}
@@ -42,15 +47,16 @@ func (s *Store) TopHubs(ctx context.Context, repoID string, limit int) ([]Hub, e
 	if limit <= 0 {
 		limit = 8
 	}
-	// Over-fetch so vendored/generated code (filtered below) doesn't shrink the
-	// list — hubs are about THIS project's own load-bearing code, not deps.
+	// Over-fetch so vendored/demo/fixture code (filtered below) doesn't shrink the
+	// list — hubs are about THIS project's own load-bearing code, not deps or
+	// tutorial trees that otherwise drown real centrality (FastAPI docs_src, Nest sample/).
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.id, s.name, s.path, s.line_start, s.kind, COUNT(*) AS deg
 FROM edges e JOIN symbols s ON s.id = e.dst_id AND s.repo_id = e.repo_id
 WHERE e.repo_id = ? AND e.kind = ? AND e.dst_id LIKE 'sym:%'
 GROUP BY e.dst_id
 ORDER BY deg DESC, s.path ASC
-LIMIT ?`, repoID, string(types.RefKindCalls), limit*4)
+LIMIT ?`, repoID, string(types.RefKindCalls), limit*24)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +68,10 @@ LIMIT ?`, repoID, string(types.RefKindCalls), limit*4)
 			return nil, err
 		}
 		if isVendorPath(h.Path) {
+			continue
+		}
+		// CSS / stylesheet paths inflate hubs via accidental call edges; demote.
+		if isStyleHubPath(h.Path) {
 			continue
 		}
 		out = append(out, h)
@@ -137,9 +147,11 @@ WHERE e.repo_id = ? AND e.kind = ? AND e.dst_id LIKE 'sym:%'`, repoID, string(ty
 	return out, nil
 }
 
-// isVendorPath reports whether a path is vendored, generated, or dependency code
-// that isn't part of the project's own architecture.
+// isVendorPath reports whether a path is vendored, generated, dependency, test,
+// or secondary demo/fixture code that isn't part of the project's own architecture
+// hubs. Kept broad so TopHubs/TopPackages surface production packages.
 func isVendorPath(p string) bool {
+	p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
 	switch {
 	case strings.HasPrefix(p, "third_party/"), strings.HasPrefix(p, "vendor/"),
 		strings.Contains(p, "/vendor/"), strings.Contains(p, "node_modules/"),
@@ -149,6 +161,49 @@ func isVendorPath(p string) bool {
 		strings.HasPrefix(p, ".output/"), strings.Contains(p, "/.output/"),
 		strings.Contains(p, "/.next/"), strings.Contains(p, "/.nuxt/"),
 		strings.Contains(p, "/target/"), strings.Contains(p, "__pycache__/"):
+		return true
+	}
+	// Test + secondary demo/fixture trees drown library hubs (Nest sample/,
+	// FastAPI docs_src/, Fiber *_test.go, Express examples/).
+	for _, seg := range []string{
+		"/test/", "/tests/", "/__tests__/", "/spec/", "/specs/",
+		"/docs_src/", "/sample/", "/samples/", "/examples/", "/example/",
+		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
+		"/_expected/", "/benchmarking/", "/playground/", "/playgrounds/",
+		"/test/acceptance/", "/acceptance/",
+	} {
+		if strings.Contains(p, seg) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"test/", "tests/", "docs_src/", "sample/", "samples/", "examples/",
+		"example/", "integration/", "fixtures/", "benchmarking/", "playground/",
+		"playgrounds/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	if strings.HasSuffix(p, "_test.go") || strings.Contains(path.Base(p), "_expected") ||
+		strings.HasPrefix(path.Base(p), "expected.") {
+		return true
+	}
+	return false
+}
+
+// isStyleHubPath demotes CSS/stylesheet symbols from architecture hubs (Svelte
+// expected.css fixtures and global stylesheets drown real code centrality).
+func isStyleHubPath(p string) bool {
+	p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	base := path.Base(p)
+	switch {
+	case strings.HasSuffix(base, ".css"), strings.HasSuffix(base, ".scss"),
+		strings.HasSuffix(base, ".sass"), strings.HasSuffix(base, ".less"),
+		strings.HasSuffix(base, ".styl"):
+		return true
+	case strings.Contains(p, "/styles/"), strings.Contains(p, "/css/"),
+		strings.HasPrefix(p, "styles/"), strings.HasPrefix(p, "css/"):
 		return true
 	}
 	return false
@@ -163,10 +218,10 @@ func (s *Store) CallersOfLimited(ctx context.Context, repoID, calleeID string, l
 		return s.CallersOf(ctx, repoID, calleeID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT s.id, s.repo_id, s.name, s.kind, s.path, s.line_start, s.line_end, s.language, COALESCE(s.signature,''), COALESCE(s.parent_id,'')
+SELECT DISTINCT s.id, s.repo_id, s.name, s.kind, s.path, s.line_start, s.line_end, s.language, COALESCE(s.signature,''), COALESCE(s.parent_id,'')
 FROM edges e JOIN symbols s ON s.id = e.src_id AND s.repo_id = e.repo_id
-WHERE e.repo_id = ? AND e.dst_id = ? AND e.kind = ?
-LIMIT ?`, repoID, calleeID, string(types.RefKindCalls), limit)
+WHERE e.repo_id = ? AND e.dst_id = ? AND e.kind IN (?, ?)
+LIMIT ?`, repoID, calleeID, string(types.RefKindCalls), string(types.RefKindReads), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -174,13 +229,14 @@ LIMIT ?`, repoID, calleeID, string(types.RefKindCalls), limit)
 	return scanSymbols(rows)
 }
 
-// CountCallers returns how many symbols call calleeID — an index-backed COUNT, so
-// a consumer can report "N callers (showing 12)" without materializing all N.
+// CountCallers returns how many distinct symbols reference calleeID via calls
+// or reads — an index-backed COUNT, so a consumer can report "N callers
+// (showing 12)" without materializing all N.
 func (s *Store) CountCallers(ctx context.Context, repoID, calleeID string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM edges WHERE repo_id = ? AND dst_id = ? AND kind = ?`,
-		repoID, calleeID, string(types.RefKindCalls)).Scan(&n)
+		`SELECT COUNT(DISTINCT src_id) FROM edges WHERE repo_id = ? AND dst_id = ? AND kind IN (?, ?)`,
+		repoID, calleeID, string(types.RefKindCalls), string(types.RefKindReads)).Scan(&n)
 	return n, err
 }
 

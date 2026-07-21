@@ -54,7 +54,12 @@ is a retrieval eval suite — use codehelper eval instead of model-eval.`
 
 const doctorLongHelp = `Environment and index health diagnostics for the repo at [path] (default: cwd).
 
-Checks: executable, freshness, meta, graph_counts_match_meta, registry, watch_state.
+Checks: executable, freshness, meta, graph_counts_match_meta, primary_language_graph,
+registry, watch_state, browser_tier.
+
+primary_language_graph WARNs when the primary language has 0 symbols, is
+contains-only / inventory-only (no useful call/import edges), or has a sparse
+call graph — those cases are NOT labeled "healthy" even when the index exists.
 
 If graph_counts_match_meta fails, run codehelper analyze --force.
 Flags: --json (machine report), --strict (fail on warnings too).`

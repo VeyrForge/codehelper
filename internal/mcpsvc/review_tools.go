@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/VeyrForge/codehelper/internal/detect"
 	"github.com/VeyrForge/codehelper/internal/freshness"
+	"github.com/VeyrForge/codehelper/internal/gitutil"
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -28,18 +31,28 @@ type reviewFinding struct {
 	Tests      int    `json:"tests_covering"`
 }
 
+type reviewSecurityHit struct {
+	Rule     string `json:"rule"`
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	Message  string `json:"message"`
+}
+
 type reviewResponse struct {
-	BaseRef          string          `json:"base_ref"`
-	ChangedSymbols   int             `json:"changed_symbols"`
-	Findings         []reviewFinding `json:"findings,omitempty"`
-	PublicAPIChanges []string        `json:"public_api_changes,omitempty"`
-	UntestedChanges  []string        `json:"untested_changes,omitempty"`
-	HighRisk         []string        `json:"high_risk,omitempty"`
-	TestsToRun       []string        `json:"tests_to_run,omitempty"`
-	Checklist        []string        `json:"checklist"`
-	Verdict          string          `json:"verdict"`
-	Freshness        string          `json:"freshness,omitempty"`
-	Note             string          `json:"note"`
+	BaseRef           string               `json:"base_ref"`
+	ChangedSymbols    int                  `json:"changed_symbols"`
+	Findings          []reviewFinding      `json:"findings,omitempty"`
+	SecurityFindings  []reviewSecurityHit  `json:"security_findings,omitempty"`
+	PublicAPIChanges  []string             `json:"public_api_changes,omitempty"`
+	UntestedChanges   []string             `json:"untested_changes,omitempty"`
+	HighRisk          []string             `json:"high_risk,omitempty"`
+	TestsToRun        []string             `json:"tests_to_run,omitempty"`
+	Checklist         []string             `json:"checklist"`
+	Verdict           string               `json:"verdict"`
+	Freshness         string               `json:"freshness,omitempty"`
+	Note              string               `json:"note"`
 }
 
 const maxReviewSymbols = 40
@@ -62,6 +75,13 @@ func reviewHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			base = "HEAD~1"
 		}
 		ids, derr := detect.ChangedSymbols(ctx, repo.RootPath, repo.Name, base, st)
+		if derr != nil && base == "HEAD~1" {
+			// Shallow clones often lack HEAD~1; fall back to working tree vs HEAD.
+			ids, derr = detect.ChangedSymbols(ctx, repo.RootPath, repo.Name, "HEAD", st)
+			if derr == nil {
+				base = "HEAD"
+			}
+		}
 		if derr != nil {
 			return mcp.NewToolResultError(derr.Error()), nil
 		}
@@ -111,6 +131,21 @@ func reviewHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 		sort.Strings(out.TestsToRun)
 
+		if diffText, derr := gitutil.UnifiedDiff(repo.RootPath, base); derr == nil && strings.TrimSpace(diffText) != "" {
+			var lines []security.AddedDiffLine
+			for _, f := range review.ParseUnifiedDiff(diffText) {
+				for _, l := range f.Added {
+					lines = append(lines, security.AddedDiffLine{File: f.Path, Line: l.LineNo, Content: l.Content})
+				}
+			}
+			for _, s := range security.ScanDiffForSecuritySmells(lines) {
+				out.SecurityFindings = append(out.SecurityFindings, reviewSecurityHit{
+					Rule: s.Rule, Severity: s.Severity, File: s.File, Line: s.Line,
+					Evidence: s.Evidence, Message: "Security smell in added code: " + s.Rule,
+				})
+			}
+		}
+
 		out.Checklist = []string{
 			"Security: validate inputs, enforce authz, avoid injection/secret leakage on the changed lines.",
 			"Performance: no N+1 / O(n^2) / unbounded memory introduced on the common path.",
@@ -119,8 +154,11 @@ func reviewHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 
 		switch {
-		case len(ids) == 0:
+		case len(ids) == 0 && len(out.SecurityFindings) == 0:
 			out.Verdict = "No changed symbols vs " + base + " (clean, or changes are in non-indexed files)."
+		case len(out.SecurityFindings) > 0:
+			out.Verdict = fmt.Sprintf("Security findings: %d smell(s) in the diff — fix before finishing. Also %d changed symbol(s).",
+				len(out.SecurityFindings), len(out.Findings))
 		case len(out.HighRisk) > 0 || len(out.UntestedChanges) > 0 || len(out.PublicAPIChanges) > 0:
 			out.Verdict = fmt.Sprintf("Review needed: %d changed symbol(s) — %d public-API, %d untested, %d high-risk. Address the flags, then run tests_to_run + diagnostics.",
 				len(out.Findings), len(out.PublicAPIChanges), len(out.UntestedChanges), len(out.HighRisk))
@@ -130,7 +168,7 @@ func reviewHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if fresh := freshness.Inspect(repo.RootPath); fresh.Stale {
 			out.Freshness = "index may be stale (" + fresh.StaleReason + ") — re-run analyze for accurate review"
 		}
-		out.Note = "Deterministic diff audit (no LLM): changed symbols + blast radius + covering tests + flags. Use after editing, before finishing; pair with diagnostics (build/vet) and review_diff (line-level). The write-side complement to plan."
+		out.Note = "Deterministic diff audit (no LLM): changed symbols + blast radius + covering tests + security smell scan + flags. Use after editing, before finishing; pair with diagnostics (build/vet) and review_diff (line-level). The write-side complement to plan."
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
 }

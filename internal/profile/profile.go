@@ -179,6 +179,20 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 			entries = append(entries, "requirements.txt")
 		}
 	}
+	// Elixir / Mix — overrides Node when both package.json (JS client assets) and
+	// mix.exs are present, matching how composer.json overrides Node for PHP apps.
+	if hasFile("mix.exs") {
+		pms["mix"] = struct{}{}
+		langs["elixir"] = struct{}{}
+		p.TestCommands = append(p.TestCommands, "mix test")
+		if p.ProjectType == "" || p.ProjectType == "node" {
+			p.ProjectType = "elixir"
+		}
+		entries = append(entries, "mix.exs")
+		if v := mixElixirVersion(readRel("mix.exs")); v != "" {
+			p.Versions["elixir"] = v
+		}
+	}
 
 	// Game engines DEFINE the project even when a language manifest is also present
 	// (a Godot game with a Go client, Unity with C# + package.json tooling, etc.),
@@ -299,6 +313,7 @@ var langExt = map[string]string{
 	".cs": "csharp", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".hh": "cpp",
 	".c": "c", ".h": "c", ".m": "objc", ".mm": "objc",
 	".gd": "gdscript", ".lua": "lua", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+	".ex": "elixir", ".exs": "elixir",
 	".swift": "swift", ".sh": "shell", ".bash": "shell",
 	".css": "css", ".scss": "css", ".sass": "css", ".less": "css",
 	".html": "html", ".htm": "html", ".sql": "sql",
@@ -355,7 +370,8 @@ func collectLangStats(repoRoot string, langs map[string]struct{}) ([]LanguageSta
 			case "node_modules", "vendor", ".vendor", ".git", ".codehelper",
 				// Unity/Godot/Unreal generated + cache trees: huge and not source.
 				"Library", "Temp", "Obj", "obj", "Build", "Binaries", "Intermediate", "DerivedDataCache", ".godot", "PackageCache",
-				"dist", "build", "target", "__pycache__", ".venv", "venv":
+				"dist", "build", "target", "__pycache__", ".venv", "venv",
+				".gradle":
 				return filepath.SkipDir
 			}
 			if strings.Count(rel, string(filepath.Separator)) > 8 {
@@ -392,11 +408,27 @@ func collectLangStats(repoRoot string, langs map[string]struct{}) ([]LanguageSta
 		}
 		return stats[i].Language < stats[j].Language
 	})
-	primary := ""
-	if len(stats) > 0 {
-		primary = stats[0].Language
-	}
+	primary := pickPrimaryLanguage(stats)
 	return stats, primary
+}
+
+// markupOrDataLangs are kept in language_stats for transparency but must not
+// win primary_language when any real programming language is present (e.g.
+// Spring Petclinic CSS bytes dominating Java).
+var markupOrDataLangs = map[string]bool{
+	"css": true, "html": true, "sql": true, "shell": true,
+}
+
+func pickPrimaryLanguage(stats []LanguageStat) string {
+	if len(stats) == 0 {
+		return ""
+	}
+	for _, s := range stats {
+		if !markupOrDataLangs[s.Language] {
+			return s.Language
+		}
+	}
+	return stats[0].Language
 }
 
 func dedupe(in []string) []string {

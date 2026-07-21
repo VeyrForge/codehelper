@@ -8,6 +8,7 @@ import (
 
 	"github.com/VeyrForge/codehelper/internal/gitutil"
 	"github.com/VeyrForge/codehelper/internal/graph"
+	"github.com/VeyrForge/codehelper/internal/security"
 )
 
 type DiffRequest struct {
@@ -22,10 +23,19 @@ type DiffRequest struct {
 }
 
 func ReviewDiff(ctx context.Context, st *graph.Store, req DiffRequest) (*ReviewResult, error) {
+	_ = st
 	if strings.TrimSpace(req.Base) == "" {
 		req.Base = "HEAD~1"
 	}
 	files, err := gitutil.DiffAgainst(req.RepoRoot, req.Base)
+	if err != nil && req.Base == "HEAD~1" {
+		// Shallow clones (--depth 1) have no parent commit; fall back to working
+		// tree vs HEAD so review_diff still works without forcing agents to guess.
+		files, err = gitutil.DiffAgainst(req.RepoRoot, "HEAD")
+		if err == nil {
+			req.Base = "HEAD"
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -53,21 +63,135 @@ func ReviewDiff(ctx context.Context, st *graph.Store, req DiffRequest) (*ReviewR
 		if req.IncludeSecurity && (strings.Contains(p, "auth") || strings.Contains(p, "login") || strings.Contains(p, "security")) {
 			findings = append(findings, Finding{
 				Severity: SeverityHigh, Category: "security", File: f,
-				Message:      "Security-sensitive file changed; run security_context checks.",
-				SuggestedFix: "Import SARIF findings and confirm auth boundaries remain intact.",
+				Message:      "Security-sensitive file changed; confirm authz boundaries and scan for injection/secrets.",
+				SuggestedFix: "Review added lines for SQL concat, eval, and hard-coded credentials.",
 			})
 		}
 	}
+
+	// Line-level high-signal rules on the unified diff (not a full SAST product).
+	diffText, derr := gitutil.UnifiedDiff(req.RepoRoot, req.Base)
+	if derr == nil && strings.TrimSpace(diffText) != "" {
+		diffFiles := ParseUnifiedDiff(diffText)
+		if req.IncludeSecurity {
+			findings = append(findings, securityFindingsFromDiff(diffFiles)...)
+		}
+		if req.IncludePerformance {
+			if pg, perr := PerfGuard(ctx, req.RepoRoot, req.Base); perr == nil && pg != nil {
+				findings = append(findings, pg.PerfRisks...)
+			}
+		}
+	}
+
+	findings = dedupeFindings(findings)
 	findings = filterBySeverity(findings, req.SeverityFloor)
 	risk := RiskScore(findings)
 	summary := buildReviewSummary(files, findings, risk)
 	required = dedupe(required)
+	if hasSecurityRule(findings) {
+		required = append(required, "Address security findings (secrets/injection/eval) before merge.")
+		required = dedupe(required)
+	}
 	return &ReviewResult{
 		Summary:         summary,
 		Risk:            risk,
 		Findings:        findings,
 		RequiredActions: required,
 	}, nil
+}
+
+func securityFindingsFromDiff(files []DiffFile) []Finding {
+	var lines []security.AddedDiffLine
+	for _, f := range files {
+		for _, l := range f.Added {
+			lines = append(lines, security.AddedDiffLine{
+				File: f.Path, Line: l.LineNo, Content: l.Content,
+			})
+		}
+	}
+	smells := security.ScanDiffForSecuritySmells(lines)
+	out := make([]Finding, 0, len(smells))
+	for _, s := range smells {
+		sev := Severity(strings.ToLower(s.Severity))
+		if sev == "" {
+			sev = SeverityHigh
+		}
+		msg := securityRuleMessage(s.Rule)
+		out = append(out, Finding{
+			Severity:     sev,
+			Category:     "security",
+			File:         s.File,
+			Line:         s.Line,
+			Message:      msg,
+			Evidence:     []string{s.Evidence},
+			SuggestedFix: securityRuleFix(s.Rule),
+		})
+	}
+	return out
+}
+
+func securityRuleMessage(rule string) string {
+	switch rule {
+	case "hardcoded-secret":
+		return "Possible hard-coded credential in added code."
+	case "sql-string-concat":
+		return "SQL built via string concatenation/interpolation in added code."
+	case "eval-usage":
+		return "eval / new Function usage in added code."
+	case "shell-exec-injection":
+		return "Shell/exec built from variable input in added code."
+	case "csrf-disabled":
+		return "CSRF protection appears disabled in added code."
+	case "open-redirect":
+		return "Redirect target taken from user input in added code."
+	case "blade-unescaped-output":
+		return "Unescaped Blade output ({!! !!}) of dynamic data."
+	case "missing-nonce-check":
+		return "WordPress AJAX handler change may lack nonce verification."
+	default:
+		if rule == "" {
+			return "Security smell detected in added code."
+		}
+		return "Security smell (" + rule + ") in added code."
+	}
+}
+
+func securityRuleFix(rule string) string {
+	switch rule {
+	case "hardcoded-secret":
+		return "Move the value to an environment variable or secret store; never commit credentials."
+	case "sql-string-concat":
+		return "Use parameterized queries / prepared statements."
+	case "eval-usage":
+		return "Remove eval/new Function or strictly sandbox the input."
+	case "shell-exec-injection":
+		return "Pass argv slices (no shell) or validate/escape rigorously."
+	default:
+		return "Confirm the change is intentional and add a regression test."
+	}
+}
+
+func hasSecurityRule(findings []Finding) bool {
+	for _, f := range findings {
+		if f.Category == "security" && (f.Severity == SeverityHigh || f.Severity == SeverityCritical) {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeFindings(in []Finding) []Finding {
+	seen := map[string]struct{}{}
+	out := make([]Finding, 0, len(in))
+	for _, f := range in {
+		key := fmt.Sprintf("%s|%s|%s|%d|%s", f.Category, f.Severity, f.File, f.Line, f.Message)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, f)
+	}
+	return out
 }
 
 func buildReviewSummary(files []string, findings []Finding, risk string) string {

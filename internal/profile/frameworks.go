@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -178,6 +179,9 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 
 	// --- Node ---
 	if has("package.json") {
+		nestVer, isNest := detectNestJS(repoRoot, depVer)
+		vueVer, isVue := detectVue(repoRoot, depVer)
+		remixVer, isRemix := detectRemix(repoRoot, depVer)
 		switch {
 		case depVer["npm:next"] != "":
 			set("nextjs", "nextjs", depVer["npm:next"])
@@ -187,16 +191,21 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 			set("sveltekit", "sveltekit", depVer["npm:@sveltejs/kit"])
 		case depVer["npm:@angular/core"] != "":
 			set("angular", "angular", depVer["npm:@angular/core"])
-		case depVer["npm:@nestjs/core"] != "":
-			set("nestjs", "nestjs", depVer["npm:@nestjs/core"])
+		case isNest:
+			// Nest before express: @nestjs/* packages list express as a dep but
+			// are Nest framework repos (root package.json often has no @nestjs/core dep).
+			set("nestjs", "nestjs", nestVer)
 		case depVer["npm:astro"] != "":
 			set("astro", "astro", depVer["npm:astro"])
 		case depVer["npm:gatsby"] != "":
 			set("gatsby", "gatsby", depVer["npm:gatsby"])
-		case depVer["npm:@remix-run/react"] != "":
-			set("remix", "remix", depVer["npm:@remix-run/react"])
-		case depVer["npm:vue"] != "":
-			set("vue", "vue", depVer["npm:vue"])
+		case isRemix:
+			// Remix monorepos publish @remix-run/* packages without listing
+			// @remix-run/react at the workspace root.
+			set("remix", "remix", remixVer)
+		case isVue:
+			// Vue core monorepo names itself "vue" and lives under packages/vue.
+			set("vue", "vue", vueVer)
 		case depVer["npm:svelte"] != "":
 			set("svelte", "svelte", depVer["npm:svelte"])
 		case depVer["npm:react"] != "":
@@ -209,6 +218,8 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 	// --- Python ---
 	if has("requirements.txt") || has("pyproject.toml") || has("setup.py") || has("manage.py") {
 		switch {
+		case pyProjectName(repoRoot) == "djangorestframework" || depVer["pip:djangorestframework"] != "" || has("rest_framework"):
+			set("django-rest-framework", "django", firstNonEmpty(depVer["pip:djangorestframework"], depVer["pip:django"], depVer["pip:Django"]))
 		case has("manage.py") || depVer["pip:django"] != "" || depVer["pip:Django"] != "":
 			set("django", "django", firstNonEmpty(depVer["pip:django"], depVer["pip:Django"]))
 		case depVer["pip:fastapi"] != "":
@@ -219,8 +230,27 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 	}
 
 	// --- Ruby ---
-	if has("Gemfile") && (depVer["rubygems:rails"] != "" || has("bin/rails")) {
-		set("rails", "rails", depVer["rubygems:rails"])
+	if has("Gemfile") || gemspecPresent(repoRoot) {
+		switch {
+		case depVer["rubygems:rails"] != "" || has("bin/rails"):
+			set("rails", "rails", depVer["rubygems:rails"])
+		case depVer["rubygems:sinatra"] != "" || gemspecName(repoRoot) == "sinatra" || has("lib/sinatra.rb"):
+			set("sinatra", "ruby", firstNonEmpty(depVer["rubygems:sinatra"], gemspecVersion(repoRoot)))
+		}
+	}
+
+	// --- Rust web frameworks ---
+	if has("Cargo.toml") {
+		axumVer, isAxum := detectAxum(repoRoot, depVer)
+		switch {
+		case isAxum:
+			// Apps depend on axum; the axum workspace itself is package name "axum".
+			set("axum", "rust", axumVer)
+		case depVer["cargo:actix-web"] != "":
+			set("actix-web", "rust", depVer["cargo:actix-web"])
+		case depVer["cargo:rocket"] != "":
+			set("rocket", "rust", depVer["cargo:rocket"])
+		}
 	}
 
 	// --- Java (Spring Boot) ---
@@ -235,6 +265,22 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 			if c := readHead(filepath.Join(repoRoot, "build.gradle"), 8192) + readHead(filepath.Join(repoRoot, "build.gradle.kts"), 8192); strings.Contains(c, "spring-boot") {
 				set("spring-boot", "spring", "")
 			}
+		}
+	}
+
+	// --- Elixir / Phoenix ---
+	if has("mix.exs") || p.ProjectType == "elixir" {
+		mix := readHead(filepath.Join(repoRoot, "mix.exs"), 16384)
+		isPhoenixLib := strings.Contains(mix, "Phoenix.MixProject") || strings.Contains(mix, "app: :phoenix")
+		isPhoenixApp := strings.Contains(mix, "{:phoenix,") || strings.Contains(mix, "dep: :phoenix")
+		if isPhoenixLib || isPhoenixApp {
+			ver := ""
+			if m := regexp.MustCompile(`@version\s+"([^"]+)"`).FindStringSubmatch(mix); m != nil {
+				ver = cleanVer(m[1])
+			} else if m := regexp.MustCompile(`\{:phoenix,\s*"([^"]+)"`).FindStringSubmatch(mix); m != nil {
+				ver = cleanVer(m[1])
+			}
+			set("phoenix", "phoenix", ver)
 		}
 	}
 }
@@ -258,6 +304,220 @@ func firstNonEmpty(vals ...string) string {
 		if v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+// detectNestJS reports whether repoRoot is a NestJS app or @nestjs/* package.
+// Root Nest monorepos often name themselves @nestjs/core and depend on express
+// without listing @nestjs/core in dependencies — so dep-only detection mislabels
+// them as express.
+func detectNestJS(repoRoot string, depVer map[string]string) (version string, ok bool) {
+	if v := depVer["npm:@nestjs/core"]; v != "" {
+		return v, true
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "nest-cli.json")); err == nil {
+		return "", true
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if err != nil {
+		return "", false
+	}
+	var pj struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(b, &pj) != nil {
+		return "", false
+	}
+	name := strings.TrimSpace(pj.Name)
+	if strings.HasPrefix(name, "@nestjs/") || name == "@nestjs/core" {
+		return strings.TrimSpace(pj.Version), true
+	}
+	return "", false
+}
+
+// detectVue reports Vue apps and the vuejs/core monorepo (package name "vue" or
+// packages/vue present) even when root package.json has no "vue" dependency.
+func detectVue(repoRoot string, depVer map[string]string) (version string, ok bool) {
+	if v := depVer["npm:vue"]; v != "" {
+		return v, true
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if err == nil {
+		var pj struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(b, &pj) == nil {
+			name := strings.TrimSpace(pj.Name)
+			if name == "vue" || strings.HasPrefix(name, "@vue/") {
+				return strings.TrimSpace(pj.Version), true
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "packages", "vue", "package.json")); err == nil {
+		vb, _ := os.ReadFile(filepath.Join(repoRoot, "packages", "vue", "package.json"))
+		var vpj struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(vb, &vpj) == nil && strings.TrimSpace(vpj.Name) == "vue" {
+			return strings.TrimSpace(vpj.Version), true
+		}
+		return "", true
+	}
+	return "", false
+}
+
+// detectRemix reports Remix apps and the remix-run/remix monorepo (@remix-run/*
+// workspace packages) even when root omits @remix-run/react.
+func detectRemix(repoRoot string, depVer map[string]string) (version string, ok bool) {
+	if v := depVer["npm:@remix-run/react"]; v != "" {
+		return v, true
+	}
+	for k, v := range depVer {
+		if strings.HasPrefix(k, "npm:@remix-run/") {
+			return v, true
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if err == nil {
+		var pj struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(b, &pj) == nil {
+			name := strings.TrimSpace(pj.Name)
+			if name == "remix" || name == "remix-the-web" || strings.HasPrefix(name, "@remix-run/") {
+				return "", true
+			}
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(repoRoot, "packages"))
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pb, err := os.ReadFile(filepath.Join(repoRoot, "packages", e.Name(), "package.json"))
+		if err != nil {
+			continue
+		}
+		var pj struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(pb, &pj) != nil {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(pj.Name), "@remix-run/") {
+			return strings.TrimSpace(pj.Version), true
+		}
+	}
+	return "", false
+}
+
+func pyProjectName(repoRoot string) string {
+	b, err := os.ReadFile(filepath.Join(repoRoot, "pyproject.toml"))
+	if err != nil {
+		return ""
+	}
+	re := regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"`)
+	if m := re.FindStringSubmatch(string(b)); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+// detectAxum reports Axum apps (cargo dep) and the tokio-rs/axum workspace
+// itself (package name "axum" at root or under axum/).
+func detectAxum(repoRoot string, depVer map[string]string) (version string, ok bool) {
+	if v := depVer["cargo:axum"]; v != "" {
+		return v, true
+	}
+	if name, ver := cargoPackageMeta(repoRoot); name == "axum" {
+		return ver, true
+	}
+	if name, ver := cargoPackageMeta(filepath.Join(repoRoot, "axum")); name == "axum" {
+		return ver, true
+	}
+	return "", false
+}
+
+var cargoPkgNameRe = regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"`)
+var cargoPkgVerRe = regexp.MustCompile(`(?m)^\s*version\s*=\s*"([^"]+)"`)
+
+func cargoPackageMeta(dir string) (name, version string) {
+	b, err := os.ReadFile(filepath.Join(dir, "Cargo.toml"))
+	if err != nil {
+		return "", ""
+	}
+	content := string(b)
+	// Prefer [package] table values over workspace.package.
+	section := ""
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			section = strings.Trim(t, "[]")
+			continue
+		}
+		if section != "package" {
+			continue
+		}
+		if name == "" {
+			if m := cargoPkgNameRe.FindStringSubmatch(t); m != nil {
+				name = strings.TrimSpace(m[1])
+			}
+		}
+		if version == "" {
+			if m := cargoPkgVerRe.FindStringSubmatch(t); m != nil {
+				version = cleanVer(m[1])
+			}
+		}
+	}
+	return name, version
+}
+
+func gemspecPresent(repoRoot string) bool {
+	entries, err := os.ReadDir(repoRoot)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".gemspec") {
+			return true
+		}
+	}
+	return false
+}
+
+func gemspecName(repoRoot string) string {
+	entries, err := os.ReadDir(repoRoot)
+	if err != nil {
+		return ""
+	}
+	re := regexp.MustCompile(`Gem::Specification\.new\s+['"]([^'"]+)['"]`)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".gemspec") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(repoRoot, e.Name()))
+		if err != nil {
+			continue
+		}
+		if m := re.FindStringSubmatch(string(b)); m != nil {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
+}
+
+func gemspecVersion(repoRoot string) string {
+	// Sinatra (and similar) store the version in a VERSION file next to the gemspec.
+	if b, err := os.ReadFile(filepath.Join(repoRoot, "VERSION")); err == nil {
+		return cleanVer(string(b))
 	}
 	return ""
 }

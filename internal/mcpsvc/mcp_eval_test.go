@@ -67,8 +67,8 @@ func TestProjectContextReturnsRepoAndEntrypoints(t *testing.T) {
 	if len(out.RecommendedNextTools) == 0 {
 		t.Fatal("expected recommended_next_tools")
 	}
-	if out.MCPToolCount != 60 {
-		t.Fatalf("mcp_tool_count: got %d want 60", out.MCPToolCount)
+	if out.MCPToolCount != 62 {
+		t.Fatalf("mcp_tool_count: got %d want 62", out.MCPToolCount)
 	}
 	if out.MCPParamKeys == "" || out.ToolContractPath != "AGENTS.md" {
 		t.Fatalf("expected MCP catalog header, got count=%d keys=%q contract=%q", out.MCPToolCount, out.MCPParamKeys, out.ToolContractPath)

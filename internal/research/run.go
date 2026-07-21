@@ -59,6 +59,9 @@ type Policy struct {
 }
 
 // LearningEnabled reports whether project learning/memory capture is enabled.
+// Accepts both schemas used historically:
+//   - {"enabled": true, "mode": "approval"}  (agents.Write / ensureLearningConfig)
+//   - {"state": "enabled"}                   (older / alternate writers)
 func LearningEnabled(repoRoot string) bool {
 	path := filepath.Join(paths.RepoIndexDir(repoRoot), "learning.json")
 	b, err := os.ReadFile(path)
@@ -69,8 +72,17 @@ func LearningEnabled(repoRoot string) bool {
 	if err := json.Unmarshal(b, &root); err != nil {
 		return false
 	}
-	state, _ := root["state"].(string)
-	return strings.ToLower(strings.TrimSpace(state)) == "enabled"
+	if state, _ := root["state"].(string); strings.ToLower(strings.TrimSpace(state)) == "enabled" {
+		return true
+	}
+	switch v := root["enabled"].(type) {
+	case bool:
+		return v
+	case string:
+		s := strings.ToLower(strings.TrimSpace(v))
+		return s == "true" || s == "enabled" || s == "1"
+	}
+	return false
 }
 
 // NetworkEnabled reports whether research network is allowed for repoRoot.

@@ -225,7 +225,9 @@ func pyprojectDeps(content string) []Dependency {
 		}
 		if inList {
 			for _, item := range strings.Split(t, ",") {
-				s := strings.Trim(strings.TrimSpace(item), `"'[]`)
+				s := strings.TrimSpace(item)
+				s = strings.TrimRight(s, ",]")
+				s = strings.Trim(s, `"'[]`)
 				if s == "" {
 					continue
 				}

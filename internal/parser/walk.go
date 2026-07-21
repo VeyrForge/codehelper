@@ -23,3 +23,17 @@ func ChildName(n *sitter.Node, field string, buf []byte) string {
 	}
 	return c.Content(buf)
 }
+
+// ChildByType returns the first direct child with the given node type.
+func ChildByType(n *sitter.Node, typ string) *sitter.Node {
+	if n == nil {
+		return nil
+	}
+	for i := 0; i < int(n.ChildCount()); i++ {
+		c := n.Child(i)
+		if c != nil && c.Type() == typ {
+			return c
+		}
+	}
+	return nil
+}

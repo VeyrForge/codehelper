@@ -211,6 +211,7 @@ type scoutResponse struct {
 	ImpactOfTop     *scoutImpact     `json:"impact_of_top,omitempty"`
 	UsageOfTop      *usageExample    `json:"usage_of_top,omitempty"`
 	Freshness       string           `json:"freshness,omitempty"`
+	CollisionNote   string           `json:"collision_note,omitempty"`
 	Note            string           `json:"note"`
 }
 
@@ -259,8 +260,9 @@ func scoutHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		hits, demoted := demoteFixtureHits(hits)
 
-		out := scoutResponse{Task: task}
+		out := scoutResponse{Task: task, CollisionNote: fixtureCollisionNote(demoted)}
 		for _, h := range hits {
 			out.ReuseCandidates = append(out.ReuseCandidates, reuseCandidate{
 				Name: h.Symbol.Name, Kind: string(h.Symbol.Kind),

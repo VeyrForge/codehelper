@@ -6,8 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/VeyrForge/codehelper/internal/connections"
+	"github.com/VeyrForge/codehelper/internal/ops"
+	"github.com/VeyrForge/codehelper/internal/projcfg"
+	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/web"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -23,14 +28,47 @@ import (
 // accessibility-tree dump (the thing that makes Playwright-MCP cost 100K+
 // tokens). Pass device=mobile|tablet|desktop, or devices=["mobile","desktop"]
 // (or "all") to capture several viewports in one call.
-func browserHandler() server.ToolHandlerFunc {
+//
+// WordPress admin: recipe=wp_login|wp_admin with site=<connections website name>
+// fills the login form from encrypted/env secrets (never echoed in logs) and
+// waits for #wpadminbar. Configure via `codehelper connections add-site`.
+func browserHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		if !web.BrowserAvailable() {
+			return mcp.NewToolResultError("browser tier not built into this binary — rebuild with `codehelper update` or `scripts/install.sh` (default includes -tags rod)"), nil
+		}
 		url := argString(args, "url")
+		recipe := argString(args, "recipe")
+		siteName := argString(args, "site")
+		actions := parseActions(args["actions"])
+		if msg := unsupportedBrowserActionHint(actions); msg != "" {
+			return mcp.NewToolResultError(msg), nil
+		}
+
+		if recipe != "" || siteName != "" {
+			resolvedURL, recipeActs, err := resolveBrowserSiteRecipe(ctx, reg, args)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			if url == "" {
+				url = resolvedURL
+			}
+			if len(recipeActs) > 0 {
+				actions = append(recipeActs, actions...)
+			}
+		}
 		if url == "" {
-			return mcp.NewToolResultError("url is required"), nil
+			return mcp.NewToolResultError("url is required (or pass site=… with a connections website profile)"), nil
 		}
 		allowPrivate := argBool(args, "allow_private", false)
+		if _, set := args["allow_private"]; !set {
+			if repo, rerr := resolveRepo(ctx, reg, argString(args, "repo")); rerr == nil {
+				if pcfg, perr := projcfg.Load(repo.RootPath); perr == nil && pcfg.BrowserAllowPrivate != nil {
+					allowPrivate = *pcfg.BrowserAllowPrivate
+				}
+			}
+		}
 		if err := web.GuardURL(url, allowPrivate); err != nil {
 			return mcp.NewToolResultError("blocked: " + err.Error()), nil
 		}
@@ -41,25 +79,42 @@ func browserHandler() server.ToolHandlerFunc {
 		}
 
 		base := web.BrowserOptions{
-			URL:          url,
-			Width:        int(mcp.ParseInt64(req, "width", 0)),
-			Height:       int(mcp.ParseInt64(req, "height", 0)),
-			Format:       web.NormalizeFormat(argString(args, "format")),
-			Quality:      int(mcp.ParseInt64(req, "quality", 0)),
-			FullPage:     argBool(args, "full_page", false),
-			Selector:     argString(args, "selector"),
-			WaitSelector: argString(args, "wait_selector"),
-			WaitMS:       int(mcp.ParseInt64(req, "wait_ms", 0)),
-			TimeoutSec:   int(mcp.ParseInt64(req, "timeout_sec", 0)),
-			AllowPrivate: allowPrivate,
-			Metrics:      argBool(args, "metrics", false),
-			SegmentPx:    int(mcp.ParseInt64(req, "segment_height", 0)),
-			ClipY:        int(mcp.ParseInt64(req, "clip_y", 0)),
-			ClipHeight:   int(mcp.ParseInt64(req, "clip_height", 0)),
-			Actions:      parseActions(args["actions"]),
-			Outline:      argBool(args, "outline", false),
-			Headed:       resolveHeaded(args),
-			SlowMoMS:     int(mcp.ParseInt64(req, "slow_mo", 0)),
+			URL:            url,
+			Width:          int(mcp.ParseInt64(req, "width", 0)),
+			Height:         int(mcp.ParseInt64(req, "height", 0)),
+			Format:         web.NormalizeFormat(argString(args, "format")),
+			Quality:        int(mcp.ParseInt64(req, "quality", 0)),
+			FullPage:       argBool(args, "full_page", false),
+			Selector:       argString(args, "selector"),
+			WaitSelector:   argString(args, "wait_selector"),
+			WaitMS:         int(mcp.ParseInt64(req, "wait_ms", 0)),
+			TimeoutSec:     int(mcp.ParseInt64(req, "timeout_sec", 0)),
+			AllowPrivate:   allowPrivate,
+			Metrics:        argBool(args, "metrics", false),
+			SegmentPx:      int(mcp.ParseInt64(req, "segment_height", 0)),
+			ClipY:          int(mcp.ParseInt64(req, "clip_y", 0)),
+			ClipHeight:     int(mcp.ParseInt64(req, "clip_height", 0)),
+			Actions:        actions,
+			Outline:        argBool(args, "outline", false),
+			Snapshot:       argBool(args, "snapshot", false),
+			Trace:          argBool(args, "trace", false),
+			WaitHydrate:    argBool(args, "wait_hydrate", false),
+			Headed:         resolveHeaded(args, projcfgBrowserHeaded(ctx, reg, args)),
+			SlowMoMS:       int(mcp.ParseInt64(req, "slow_mo", 0)),
+			PauseOnFail:    resolvePauseOnFail(args),
+			PauseOnFailMS:  int(mcp.ParseInt64(req, "pause_on_fail_ms", 0)),
+			Session:        argString(args, "session"),
+			SessionClear:   argBool(args, "session_clear", false),
+			WriteDebugPack: true,
+			DebugPackDir:   argString(args, "debug_pack_dir"),
+		}
+		if repo, rerr := resolveRepo(ctx, reg, argString(args, "repo")); rerr == nil {
+			base.WorkspaceRoot = repo.RootPath
+		} else if wd, werr := os.Getwd(); werr == nil {
+			base.WorkspaceRoot = wd
+		}
+		if allow := argString(args, "upload_allow"); allow != "" {
+			base.UploadAllowDirs = filepath.SplitList(allow)
 		}
 		previewRequested := argBool(args, "preview_actions", false)
 		base.PreviewActions = web.PreviewActionsAllowed(previewRequested)
@@ -179,6 +234,9 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 	if r.Headed {
 		b.WriteString("mode: headed (visible browser — actions highlighted on the page)\n")
 	}
+	consoleErrors := filterConsoleErrors(r.Console)
+	fmt.Fprintf(&b, "diagnostics: %d console error(s) · %d uncaught · %d failed request(s ≥400/transport)\n",
+		len(consoleErrors), len(r.PageErrors), len(r.Failed))
 	if r.PageDim != "" {
 		fmt.Fprintf(&b, "page: %s", r.PageDim)
 		if len(r.Tiles) > 0 {
@@ -223,9 +281,13 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 		}
 	}
 	if len(r.Outline) > 0 {
-		fmt.Fprintf(&b, "\nINTERACTIVE ELEMENTS (%d) — copy a selector straight into `actions`:\n", len(r.Outline))
+		fmt.Fprintf(&b, "\nINTERACTIVE ELEMENTS (%d) — use ref:eN or copy selector into `actions`:\n", len(r.Outline))
 		for _, e := range r.Outline {
-			fmt.Fprintf(&b, "  [%s] %s", e.Role, e.Selector)
+			ref := e.Ref
+			if ref == "" {
+				ref = "?"
+			}
+			fmt.Fprintf(&b, "  [%s] [%s] %s", ref, e.Role, e.Selector)
 			if e.Name != "" {
 				fmt.Fprintf(&b, " — %q", e.Name)
 			}
@@ -244,6 +306,34 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 			}
 			b.WriteByte('\n')
 		}
+	}
+	if strings.TrimSpace(r.Snapshot) != "" {
+		fmt.Fprintf(&b, "\nARIA SNAPSHOT (bounded; prefer role/name/testid locators):\n%s\n", r.Snapshot)
+	}
+	if len(r.Trace) > 0 {
+		b.WriteString("\nTRACE:\n")
+		for _, ev := range r.Trace {
+			fmt.Fprintf(&b, "  +%dms [%s] %s\n", ev.AtMS, ev.Kind, oneLine(ev.Detail))
+		}
+	}
+	if r.FailureShot {
+		b.WriteString("\nfailure screenshot: attached (last failed step) — inspect image before the final capture\n")
+	}
+	if r.FailurePack != nil && r.FailurePack.Failed {
+		b.WriteString("\nFAILURE DEBUG PACK (one bundle for debug→change→retest):\n")
+		if r.FailurePack.ReportPath != "" {
+			fmt.Fprintf(&b, "  report: %s\n", r.FailurePack.ReportPath)
+		}
+		if r.FailurePack.ScreenshotPath != "" {
+			fmt.Fprintf(&b, "  screenshot: %s\n", r.FailurePack.ScreenshotPath)
+		}
+		if r.FailurePack.PackDir != "" {
+			fmt.Fprintf(&b, "  pack_dir: %s\n", r.FailurePack.PackDir)
+		}
+		fmt.Fprintf(&b, "  url: %s\n", r.FailurePack.FinalURL)
+		fmt.Fprintf(&b, "  console_errors: %d · page_errors: %d · failed_requests: %d · outline: %d · snapshot_chars: %d\n",
+			len(r.FailurePack.ConsoleErrors), len(r.FailurePack.PageErrors), len(r.FailurePack.FailedRequests),
+			len(r.FailurePack.Outline), len(r.FailurePack.Snapshot))
 	}
 	if len(r.ActionLog) > 0 {
 		failed := false
@@ -276,6 +366,12 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 			fmt.Fprintf(&b, "  • %s\n", oneLine(e))
 		}
 	}
+	if len(consoleErrors) > 0 {
+		fmt.Fprintf(&b, "\nCONSOLE ERRORS (%d):\n", len(consoleErrors))
+		for _, m := range capMessages(consoleErrors, 40) {
+			fmt.Fprintf(&b, "  [%s] %s\n", m.Level, oneLine(m.Text))
+		}
+	}
 	if len(r.Console) > 0 {
 		fmt.Fprintf(&b, "\nCONSOLE (%d):\n", len(r.Console))
 		for _, m := range capMessages(r.Console, 40) {
@@ -283,7 +379,7 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 		}
 	}
 	if len(r.Failed) > 0 {
-		fmt.Fprintf(&b, "\nFAILED REQUESTS (%d):\n", len(r.Failed))
+		fmt.Fprintf(&b, "\nFAILED REQUESTS (%d, status≥400 or transport error):\n", len(r.Failed))
 		for _, f := range r.Failed {
 			if f.Status > 0 {
 				fmt.Fprintf(&b, "  • %d %s\n", f.Status, f.URL)
@@ -295,8 +391,8 @@ func renderBrowserReport(r *web.BrowserResult, previewRequested bool) string {
 	if strings.TrimSpace(r.Text) != "" {
 		fmt.Fprintf(&b, "\nVISIBLE TEXT:\n%s\n", r.Text)
 	}
-	if len(r.PageErrors) == 0 && len(r.Failed) == 0 {
-		b.WriteString("\nno page errors or failed requests.\n")
+	if len(r.PageErrors) == 0 && len(r.Failed) == 0 && len(consoleErrors) == 0 {
+		b.WriteString("\nno page errors, console errors, or failed requests.\n")
 	}
 	return b.String()
 }
@@ -348,19 +444,48 @@ func parseAudit(args map[string]any) (audit, full bool) {
 	}
 }
 
-// resolveHeaded decides whether to run a visible browser. The per-call `headed`
-// argument wins; when absent, CODEHELPER_BROWSER_HEADED (1/true/yes/on) acts as a
-// persistent user setting so someone can watch every run without passing the flag
-// each time. Default is headless.
-func resolveHeaded(args map[string]any) bool {
+// resolveHeaded decides whether to run a visible browser. Precedence:
+// per-call headed|gui → CODEHELPER_BROWSER_HEADED → project browser_headed → false.
+func resolveHeaded(args map[string]any, projectDefault *bool) bool {
 	if _, ok := args["headed"]; ok {
 		return argBool(args, "headed", false)
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEHELPER_BROWSER_HEADED"))) {
-	case "1", "true", "yes", "on":
+	if _, ok := args["gui"]; ok {
+		return argBool(args, "gui", false)
+	}
+	if web.HeadedFromEnv() {
 		return true
 	}
+	// Explicit env off wins over project default.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CODEHELPER_BROWSER_HEADED"))) {
+	case "0", "false", "no", "off":
+		return false
+	}
+	if projectDefault != nil {
+		return *projectDefault
+	}
 	return false
+}
+
+func projcfgBrowserHeaded(ctx context.Context, reg *registry.Registry, args map[string]any) *bool {
+	repo, err := resolveRepo(ctx, reg, argString(args, "repo"))
+	if err != nil {
+		return nil
+	}
+	cfg, err := projcfg.Load(repo.RootPath)
+	if err != nil {
+		return nil
+	}
+	return cfg.BrowserHeaded
+}
+
+// resolvePauseOnFail decides whether to pause the headed window after a failed
+// step. Per-call pause_on_fail wins; else CODEHELPER_BROWSER_PAUSE_ON_FAIL.
+func resolvePauseOnFail(args map[string]any) bool {
+	if _, ok := args["pause_on_fail"]; ok {
+		return argBool(args, "pause_on_fail", false)
+	}
+	return web.PauseOnFailFromEnv()
 }
 
 // parseActions converts the MCP `actions` argument (an array of objects) into
@@ -388,9 +513,148 @@ func parseActions(raw any) []web.Action {
 			Key:      mapStr(m, "key"),
 			Y:        mapInt(m, "y"),
 			MS:       mapInt(m, "ms"),
+			Role:     mapStr(m, "role"),
+			Name:     firstNonEmpty(mapStr(m, "name"), mapStr(m, "accessible_name")),
+			TestID:   firstNonEmpty(mapStr(m, "testid"), mapStr(m, "test_id"), mapStr(m, "data-testid")),
+			Ref:      firstNonEmpty(mapStr(m, "ref"), mapStr(m, "outline_ref")),
 		})
 	}
 	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// unsupportedBrowserActionHint returns a clear message for actions that cannot
+// run without required fields (e.g. upload missing path), so agents do not burn
+// a browser launch on a guaranteed failure. Upload itself is implemented via
+// rod Element.SetFiles when selector + text(path) are present.
+func unsupportedBrowserActionHint(actions []web.Action) string {
+	for _, a := range actions {
+		switch strings.ToLower(strings.TrimSpace(a.Do)) {
+		case "upload", "set_input_files", "setinputfiles", "attach":
+			if strings.TrimSpace(a.Selector) == "" || strings.TrimSpace(a.Text) == "" {
+				return fmt.Sprintf("browser action %q requires selector= (file input) and text= (filesystem path; multi-file: newline or || separated, sandboxed to workspace/allowlist)", a.Do)
+			}
+		}
+	}
+	return ""
+}
+
+// resolveBrowserSiteRecipe loads a connections website profile and expands a
+// named recipe (wp_login, laravel_login, django_admin, spa_hydrate, …).
+// Passwords come from env:/secret only — never from MCP args — and are marked
+// Sensitive so action logs redact them. Auth-less recipes (spa_hydrate) skip
+// credential checks.
+func resolveBrowserSiteRecipe(ctx context.Context, reg *registry.Registry, args map[string]any) (url string, actions []web.Action, err error) {
+	recipe := argString(args, "recipe")
+	siteName := argString(args, "site")
+	if recipe == "" && siteName == "" {
+		return "", nil, nil
+	}
+	if siteName == "" {
+		return "", nil, fmt.Errorf("recipe=%q requires site=<connections website name> (configure with `codehelper connections add-site`)", recipe)
+	}
+	repo, rerr := resolveRepo(ctx, reg, argString(args, "repo"))
+	if rerr != nil {
+		return "", nil, fmt.Errorf("site recipe needs an indexed project workspace: %w", rerr)
+	}
+	cfg, err := connections.Load(repo.RootPath)
+	if err != nil {
+		return "", nil, err
+	}
+	site := cfg.FindWebSite(siteName)
+	if site == nil {
+		return "", nil, fmt.Errorf("no website profile %q — add with `codehelper connections add-site --name %s --url http://… --kind %s --user …`", siteName, siteName, strings.Join(connections.SupportedSiteKinds(), "|"))
+	}
+	if !site.Enabled() {
+		return "", nil, fmt.Errorf("website profile %q is disabled", siteName)
+	}
+	if recipe == "" {
+		if pcfg, perr := loadProjcfgBrowserRecipe(repo.RootPath); perr == nil && pcfg != "" {
+			recipe = pcfg
+		} else {
+			recipe = site.DefaultRecipe()
+		}
+	}
+	user, pass := site.User, ""
+	if web.RecipeNeedsAuth(recipe) {
+		pass, err = ops.ResolveRef(repo.RootPath, site.PasswordRef, site.Name)
+		if err != nil {
+			return "", nil, fmt.Errorf("resolve site password: %w", err)
+		}
+		if strings.TrimSpace(user) == "" || pass == "" {
+			return "", nil, fmt.Errorf("website %q needs user + password_ref (env:VAR or `connections set-secret --name %s`)", siteName, siteName)
+		}
+	}
+	skipLogin := !argBool(args, "session_clear", false) && web.SessionHasCookies(argString(args, "session"))
+	acts, err := web.ExpandRecipeOptions(recipe, user, pass, strings.TrimRight(strings.TrimSpace(site.BaseURL), "/"), skipLogin)
+	if err != nil {
+		return "", nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(recipe)) {
+	case web.RecipeWPAdmin:
+		url, err = site.AdminURL()
+	case web.RecipeWPPlugins, "wordpress_plugins", "wp-plugins":
+		url, err = site.PathURL("/wp-admin/plugins.php")
+	case web.RecipeWPPosts, "wordpress_posts", "wp-posts":
+		url, err = site.PathURL("/wp-admin/edit.php")
+	case web.RecipeWPNewPost, "wordpress_new_post", "wp-new-post":
+		url, err = site.PathURL("/wp-admin/post-new.php")
+	case web.RecipeSPAHydrate, "spa", "hydrate", "spa-hydrate":
+		url = strings.TrimRight(strings.TrimSpace(site.BaseURL), "/")
+		if url == "" {
+			err = fmt.Errorf("site %q has empty base_url", siteName)
+		}
+	case web.RecipeLaravelLogin, "laravel", "laravel-login":
+		if skipLogin {
+			url, err = site.AdminURL()
+		} else {
+			url, err = site.LoginURL()
+		}
+	case web.RecipeDjangoAdmin, "django", "django-admin", "django_login":
+		if skipLogin {
+			url, err = site.AdminURL()
+		} else {
+			url, err = site.LoginURL()
+		}
+	case web.RecipeDrupalLogin, "drupal", "drupal-login":
+		if skipLogin {
+			url, err = site.AdminURL()
+		} else {
+			url, err = site.LoginURL()
+		}
+	case web.RecipeMagentoLogin, "magento", "magento-login", "magento_admin":
+		if skipLogin {
+			url, err = site.AdminURL()
+		} else {
+			url, err = site.LoginURL()
+		}
+	default:
+		if skipLogin {
+			url, err = site.AdminURL()
+		} else {
+			url, err = site.LoginURL()
+		}
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	return url, acts, nil
+}
+
+func loadProjcfgBrowserRecipe(repoRoot string) (string, error) {
+	cfg, err := projcfg.Load(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(cfg.BrowserRecipe), nil
 }
 
 func mapStr(m map[string]any, k string) string {
@@ -435,4 +699,15 @@ func capMessages(in []web.ConsoleMessage, max int) []web.ConsoleMessage {
 
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+func filterConsoleErrors(in []web.ConsoleMessage) []web.ConsoleMessage {
+	out := make([]web.ConsoleMessage, 0, len(in))
+	for _, m := range in {
+		switch strings.ToLower(strings.TrimSpace(m.Level)) {
+		case "error", "assert", "exception":
+			out = append(out, m)
+		}
+	}
+	return out
 }

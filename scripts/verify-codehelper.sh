@@ -50,8 +50,27 @@ echo "-- mcpsvc smoke (agent_plan)"
 go test ./internal/mcpsvc/... -run TestAllToolsSmoke/agent_plan -count=1 \
   || fail "agent_plan smoke"
 
+echo "-- paired MCP lite (fixture)"
+go test ./internal/mcpsvc/... -run 'TestPairedMCPLiteFixture$' -count=1 \
+  || fail "paired MCP fixture"
+
+echo "-- multi-bed coverage unit"
+go test ./internal/bench/... -run 'TestDefaultMultiBedCoverage$' -count=1 \
+  || fail "multi-bed coverage"
+
 echo "-- agentapi task API"
 go test ./internal/agentapi/... -count=1 || fail "agentapi tests"
+
+if [ -n "${CODEHELPER_TESTBEDS:-}" ] && [ -d "${CODEHELPER_TESTBEDS}" ]; then
+  echo "-- paired MCP lite (testbeds: $CODEHELPER_TESTBEDS)"
+  sh "$ROOT/scripts/mcp-paired-eval.sh" || fail "mcp-paired-eval"
+elif [ -d "$ROOT/.testbeds" ]; then
+  echo "-- paired MCP lite (local .testbeds)"
+  CODEHELPER_TESTBEDS="$ROOT/.testbeds" sh "$ROOT/scripts/mcp-paired-eval.sh" \
+    || fail "mcp-paired-eval"
+else
+  echo "-- paired MCP lite multi-bed: skip (no CODEHELPER_TESTBEDS / .testbeds)"
+fi
 
 echo ""
 echo "verify-codehelper: PASS (CLI + tests)"
@@ -60,3 +79,4 @@ echo "  - project_context → codehelper_version matches \`codehelper version\`"
 echo "  - agent_plan with request → task_id + todos in response"
 echo "  - risk_score, context_pack, expand_request → unknown tool (trimmed MCP surface)"
 echo "  - agent_memory action=search → project memory (replaces memory_search)"
+echo "Paired eval: scripts/mcp-paired-eval.sh [--report .testbeds/reports]"

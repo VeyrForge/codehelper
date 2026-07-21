@@ -45,7 +45,7 @@ func RegisterOpsTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("log_read", logReadHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("db_query",
-		mcp.WithDescription("Read-only SQL against a configured database profile. DDL/DML blocked. SQLite in-process; other drivers coming soon."),
+		mcp.WithDescription("Read-only SQL against a configured database profile (sqlite or mysql/MariaDB). DDL/DML blocked. Requires connections add-db --read-only; secrets via env:/secret only."),
 		mcp.WithString("connection", mcp.Required(), mcp.Description("Database profile name")),
 		mcp.WithString("sql", mcp.Required(), mcp.Description("SELECT query")),
 		mcp.WithNumber("max_rows", mcp.Description("Row cap (default 100)")),
@@ -55,7 +55,7 @@ func RegisterOpsTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("db_query", dbQueryHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("db_schema",
-		mcp.WithDescription("Schema introspection for a configured sqlite database. Optional comma-separated table filter."),
+		mcp.WithDescription("Schema introspection for a configured sqlite or mysql database. Optional comma-separated table filter."),
 		mcp.WithString("connection", mcp.Required(), mcp.Description("Database profile name")),
 		mcp.WithString("tables", mcp.Description("Comma-separated table names (default: all, max 50)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),

@@ -49,9 +49,10 @@ func TestTopPackageDirs(t *testing.T) {
 // detailed-only) — it's a cheap, always-on orientation.
 func TestCompactProjectContextKeepsArchitecture(t *testing.T) {
 	full := projectContextMCPResponse{
-		Repo:         "r",
-		Architecture: []string{"internal/graph", "internal/registry", "internal/taskstore"},
-		Hubs:         []string{"Close internal/graph/store.go:53 ×88"},
+		Repo:             "r",
+		Architecture:     []string{"internal/graph", "internal/registry", "internal/taskstore"},
+		Hubs:             []string{"Close internal/graph/store.go:53 ×88"},
+		VerifyFinishGate: VerifyFinishGateText,
 	}
 	got := compactProjectContext(full)
 	if len(got.Architecture) != 3 {
@@ -59,6 +60,27 @@ func TestCompactProjectContextKeepsArchitecture(t *testing.T) {
 	}
 	if len(got.Hubs) != 0 {
 		t.Errorf("short mode must drop the full hubs, got %v", got.Hubs)
+	}
+	if got.VerifyFinishGate == "" {
+		t.Errorf("short mode must KEEP verify_finish_gate")
+	}
+}
+
+func TestNormalizeInvestigateRecipe(t *testing.T) {
+	cases := map[string]string{
+		"architecture": "architecture",
+		"architect":    "architecture",
+		"design":       "architecture",
+		"dead_code":    "dead_code",
+		"perf":         "perf",
+		"security":     "security",
+		"":             "",
+		"nope":         "",
+	}
+	for in, want := range cases {
+		if got := normalizeInvestigateRecipe(in); got != want {
+			t.Errorf("normalizeInvestigateRecipe(%q)=%q want %q", in, got, want)
+		}
 	}
 }
 

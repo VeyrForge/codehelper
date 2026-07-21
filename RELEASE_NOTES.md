@@ -1,15 +1,17 @@
-# Codehelper 3.0.0
+# Codehelper 3.0.1
 
-First major public release under the **VeyrForge Source-Available License**.
+Patch release: graph/MCP quality, hybrid retrieval, and browser agent loops since 3.0.0.
 
 ## Highlights
 
-- **60+ MCP tools** for Cursor, Claude Code, Codex, and other MCP clients — symbol graph search, context, impact, verify, and more
-- **Local-first** — indexes git repos on your machine; no whole-repo uploads to a cloud model
-- **Auto-index watch** — keeps the symbol graph fresh after saves
-- **Prebuilt binaries** — Linux, macOS, and Windows universal bundles on [GitHub Releases](https://github.com/VeyrForge/codehelper/releases)
-- **Bundled Green stack** — `ge` 1.0.0 + `greencompress` 1.0.0 for optional local LLM embed/chat and compression
-- **One-command setup** — `codehelper init` wires MCP, rules, and indexing per project
+- **`impact` defaults to upstream** — bare `impact` answers "who uses this?" for class hubs; auto-retries upstream when downstream is self-only
+- **Fixture demotion** — Locate/Vibe demote sample/test/fixture hits below production code
+- **Graph provenance** — confidence bands for exact, scoped, name-only, and inferred resolution
+- **Hybrid search** — BM25/FTS expand via call/import hops + RRF; MCP `search_hybrid` and `context_bundle`
+- **Browser headed/GUI** — watch Chromium when requested; failure debug packs; upload sandbox
+- **Multi-CMS setup** — `setup_suggestions` + login recipes for WP/Laravel/Django/Drupal/Magento/SPA
+- **Denser multi-stack graphs** — Nest DI, Express CJS, Laravel, Svelte, Sinatra, and more
+- **Paired eval harness** — methodology-lite MCP ON/OFF evaluation
 
 ## Quick start
 
@@ -28,9 +30,10 @@ Or build from source: see [README.md](README.md).
 
 - [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md) — full tool reference
 - [docs/BENCHMARK.md](docs/BENCHMARK.md) — recorded benchmark results
+- [CHANGELOG.md](CHANGELOG.md) — full 3.0.1 notes
 
 ## License
 
 Free to run and use; view source and submit suggested changes via GitHub. No fork, redistribution, or competing products without permission. See [LICENSE](LICENSE).
 
-**Full Changelog**: https://github.com/VeyrForge/codehelper/commits/v3.0.0
+**Full Changelog**: https://github.com/VeyrForge/codehelper/commits/v3.0.1

@@ -50,7 +50,11 @@ func RoughTokensForFile(repoRoot, relPath string) int {
 
 var excludeDirNames = map[string]struct{}{
 	"node_modules": {}, "vendor": {}, ".vendor": {}, ".git": {}, "dist": {}, "build": {},
+	"out": {}, "tmp": {},
 	".next": {}, ".nuxt": {}, ".cache": {}, "__pycache__": {},
+	".turbo": {}, ".parcel-cache": {}, ".output": {}, ".svelte-kit": {},
+	"storybook-static": {}, ".angular": {}, ".vercel": {}, ".netlify": {},
+	"site-packages": {}, ".venv": {}, "venv": {},
 }
 
 // BuildContextPackV2 ranks retrieval hits into buckets under a token budget.

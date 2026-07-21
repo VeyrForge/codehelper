@@ -29,6 +29,35 @@ func TestParseDiagnostics(t *testing.T) {
 	}
 }
 
+func TestBucketDiagnostics_GeneratedPathsLast(t *testing.T) {
+	in := []diagnostic{
+		{File: ".next/types/app.ts", Message: "noise"},
+		{File: "src/app.ts", Message: "real"},
+		{File: "dist/bundle.js", Message: "noise2"},
+		{File: "lib/util.go", Message: "real2"},
+	}
+	actionable, generated := bucketDiagnostics(in)
+	if len(actionable) != 2 || len(generated) != 2 {
+		t.Fatalf("actionable=%d generated=%d", len(actionable), len(generated))
+	}
+	if actionable[0].File != "src/app.ts" || actionable[1].File != "lib/util.go" {
+		t.Fatalf("actionable order wrong: %+v", actionable)
+	}
+	ordered := append(append([]diagnostic{}, actionable...), generated...)
+	if ordered[0].File != "src/app.ts" || ordered[len(ordered)-1].File != "dist/bundle.js" {
+		t.Fatalf("expected actionable first / generated last: %+v", ordered)
+	}
+}
+
+func TestIsGeneratedDiagnosticPath(t *testing.T) {
+	if !isGeneratedDiagnosticPath(".next/server/chunks/123.js") {
+		t.Fatal("expected .next path as generated")
+	}
+	if isGeneratedDiagnosticPath("src/components/Button.tsx") {
+		t.Fatal("source path should not be generated")
+	}
+}
+
 func TestDiagnosticsHandler_GoBuildCatchesError(t *testing.T) {
 	reg, repo, ctx := buildIndexedRepo(t, map[string]string{
 		"go.mod": "module testmod\n\ngo 1.21\n",

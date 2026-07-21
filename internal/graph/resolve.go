@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -24,10 +25,11 @@ func (s *SymrefStats) bump(strategy string) {
 }
 
 // resolvableEdgeKinds are the reference kinds worth resolving from symref
-// placeholders to concrete symbols (call/read graphs power context + impact).
+// placeholders to concrete symbols (call/read/implements power context + impact).
 var resolvableEdgeKinds = map[string]bool{
-	"calls": true,
-	"reads": true,
+	"calls":      true,
+	"reads":      true,
+	"implements": true,
 }
 
 // ResolveSymrefs rewrites edges that point at unresolved `symref:` placeholders
@@ -154,10 +156,12 @@ func (s *Store) ResolveSymrefs(ctx context.Context, repoID string) (SymrefStats,
 		// since it disambiguates same-named methods on different types.
 		if recvType, method, ok := splitRecv(name); ok {
 			if ids := methodsByType[recvType][method]; len(ids) == 1 {
-				target, conf, strategy = ids[0], 0.92, "recv_type"
+				target, strategy = ids[0], "recv_type"
+				conf = ConfidenceForStrategy(strategy)
 			} else if id := lookupEmbeddedMethod(recvType, method, methodsByType, embedsOf); id != "" {
 				// Promoted method reached through struct embedding.
-				target, conf, strategy = id, 0.88, "embedded"
+				target, strategy = id, "embedded"
+				conf = ConfidenceForStrategy(strategy)
 			}
 			// Fall back to the bare method name for the cascade below.
 			name = method
@@ -165,7 +169,7 @@ func (s *Store) ResolveSymrefs(ctx context.Context, repoID string) (SymrefStats,
 		candidates := byName[name]
 		callerPath := pathOf[e.src]
 		if target == "" {
-			target, conf, strategy = pickCandidate(candidates, callerPath, importsByFile[callerPath], pathOf)
+			target, conf, strategy = pickCandidate(name, candidates, callerPath, importsByFile[callerPath], pathOf)
 		}
 		switch {
 		case target == "":
@@ -440,14 +444,24 @@ func symIDPath(id string) string {
 }
 
 // splitRecv splits a type-qualified call name `Type.Method` into its receiver
-// type and method. Returns ok=false for bare names (no dot), which the parser
-// only emits when it positively inferred the receiver's type.
+// type and method. Returns ok=false for bare names (no dot) and for lowercase
+// receivers (app.use / res.send Express aliases — those are symbol names, not
+// Go-style type-qualified calls).
 func splitRecv(name string) (recvType, method string, ok bool) {
 	i := strings.LastIndexByte(name, '.')
 	if i <= 0 || i+1 >= len(name) {
 		return "", "", false
 	}
-	return name[:i], name[i+1:], true
+	recv := name[:i]
+	meth := name[i+1:]
+	if recv == "" || meth == "" {
+		return "", "", false
+	}
+	// Type names are capitalized; Express/CJS aliases (app.use) are not.
+	if recv[0] < 'A' || recv[0] > 'Z' {
+		return "", "", false
+	}
+	return recv, meth, true
 }
 
 // symrefName extracts the trailing identifier from a `symref:repoID:relPath:name`
@@ -469,28 +483,119 @@ func symrefName(dst string) string {
 // confidence, and the strategy name, or "" when genuinely ambiguous — the
 // correctness gate that prefers leaving an edge unresolved over wiring a wrong
 // one.
-func pickCandidate(candidates []string, srcPath string, callerImports []string, pathOf map[string]string) (string, float64, string) {
+func pickCandidate(name string, candidates []string, srcPath string, callerImports []string, pathOf map[string]string) (string, float64, string) {
 	switch len(candidates) {
 	case 0:
 		return "", 0, ""
 	case 1:
-		return candidates[0], 0.8, "unique"
+		return candidates[0], ConfidenceForStrategy("unique"), "unique"
 	}
 	// 1. Same file as the caller (strongest local signal for forward refs).
 	if sameFile := filterByFile(candidates, srcPath, pathOf); len(sameFile) == 1 {
-		return sameFile[0], 0.85, "same_file"
+		return sameFile[0], ConfidenceForStrategy("same_file"), "same_file"
 	}
 	// 2. Import-aware: the caller imports exactly one of the candidates'
-	//    packages. This disambiguates cross-package calls without type info.
-	if imp := filterByImport(candidates, callerImports, pathOf); len(imp) == 1 {
-		return imp[0], 0.9, "import"
+	//    packages. Relative JS/TS imports (./x, ../y) resolve against the caller file.
+	if imp := filterByImportWithCaller(candidates, callerImports, srcPath, pathOf); len(imp) == 1 {
+		return imp[0], ConfidenceForStrategy("import"), "import"
 	}
 	// 3. Same directory/package as the caller (same-module resolution).
 	if sameDir := filterByDir(candidates, dirOf(srcPath), pathOf); len(sameDir) == 1 {
-		return sameDir[0], 0.8, "same_dir"
+		return sameDir[0], ConfidenceForStrategy("same_dir"), "same_dir"
+	}
+	// 3b. Same app/package subtree (Nest sample/01-cats-app vs core/interceptors).
+	if sub := filterBySubtree(candidates, srcPath, pathOf); len(sub) == 1 {
+		return sub[0], ConfidenceForStrategy("same_subtree"), "same_subtree"
+	}
+	// 4. Well-known public API definitions (FastAPI Depends / include_router,
+	//    etc.) when multiple same-named symbols exist across a library tree.
+	if pref := filterByPublicAPI(name, candidates, pathOf); len(pref) == 1 {
+		return pref[0], ConfidenceForStrategy("public_api"), "public_api"
+	}
+	// 5. Prefer production paths over sample/test/docs when exactly one
+	//    candidate survives fixture demotion (Nest sample/ collisions, CSS
+	//    fixtures, tutorial trees). Confidence is lower than same-dir.
+	if pref := filterNonFixture(candidates, pathOf); len(pref) == 1 {
+		return pref[0], ConfidenceForStrategy("non_fixture"), "non_fixture"
 	}
 	// Otherwise ambiguous: leave it as a placeholder (prefer unknown over wrong).
 	return "", 0, ""
+}
+
+// publicAPIPathHints maps ambiguous public helper names to preferred defining
+// path suffixes. Used only when same-file / import / same-dir fail.
+var publicAPIPathHints = map[string][]string{
+	"Depends":        {"param_functions.py"},
+	"include_router": {"applications.py"},
+	"APIRouter":      {"routing.py"},
+	"FastAPI":        {"applications.py"},
+}
+
+func filterByPublicAPI(name string, candidates []string, pathOf map[string]string) []string {
+	hints := publicAPIPathHints[name]
+	if len(hints) == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range candidates {
+		p := strings.ToLower(strings.ReplaceAll(pathOf[c], "\\", "/"))
+		// Prefer library package paths over docs/tests/samples.
+		if isFixturePath(p) {
+			continue
+		}
+		for _, h := range hints {
+			if strings.HasSuffix(p, strings.ToLower(h)) || strings.Contains(p, "/"+strings.ToLower(h)) {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// filterNonFixture keeps candidates whose paths are not sample/test/docs noise.
+// Used as a last-resort disambiguator when exactly one production definition remains.
+func filterNonFixture(candidates []string, pathOf map[string]string) []string {
+	var out []string
+	for _, c := range candidates {
+		p := strings.ToLower(strings.ReplaceAll(pathOf[c], "\\", "/"))
+		if isFixturePath(p) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// isFixturePath mirrors hub noise demotion for symref resolution.
+func isFixturePath(p string) bool {
+	p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	for _, seg := range []string{
+		"/docs_src/", "/sample/", "/samples/", "/examples/", "/example/",
+		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
+		"/test/", "/tests/", "/__tests__/", "/spec/", "/specs/",
+		"/_expected/", "/benchmarking/", "/playground/", "/playgrounds/",
+	} {
+		if strings.Contains(p, seg) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"docs_src/", "sample/", "samples/", "examples/", "example/",
+		"integration/", "fixtures/", "test/", "tests/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	base := p
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		base = p[i+1:]
+	}
+	if strings.HasPrefix(base, "expected.") || strings.Contains(base, "_expected") {
+		return true
+	}
+	return false
 }
 
 // filterByFile keeps candidates defined in the exact file path.
@@ -522,25 +627,97 @@ func filterByDir(candidates []string, dir string, pathOf map[string]string) []st
 }
 
 // filterByImport keeps candidates whose package directory is imported by the
-// caller (import path ends with the candidate's package dir).
+// caller (Go-style package path suffix). Prefer filterByImportWithCaller when
+// the caller's file path is known (relative JS/TS imports).
 func filterByImport(candidates []string, callerImports []string, pathOf map[string]string) []string {
+	return filterByImportWithCaller(candidates, callerImports, "", pathOf)
+}
+
+// filterByImportWithCaller resolves package-suffix imports and relative JS/TS
+// imports (./x, ../y) against the caller's file so Nest
+// `import { X } from './interceptors/x'` disambiguates same-named samples.
+func filterByImportWithCaller(candidates []string, callerImports []string, callerPath string, pathOf map[string]string) []string {
 	if len(callerImports) == 0 {
 		return nil
 	}
+	callerDir := dirOf(normalizePath(callerPath))
 	var out []string
+	seen := map[string]bool{}
 	for _, c := range candidates {
-		pkgDir := dirOf(pathOf[c])
+		candPath := normalizePath(pathOf[c])
+		pkgDir := dirOf(candPath)
 		if pkgDir == "" {
 			continue
 		}
 		for _, imp := range callerImports {
-			if imp == pkgDir || strings.HasSuffix(imp, "/"+pkgDir) || strings.HasSuffix(imp, pkgDir) {
+			imp = strings.TrimSpace(imp)
+			if imp == "" {
+				continue
+			}
+			matched := false
+			switch {
+			case imp == pkgDir || strings.HasSuffix(imp, "/"+pkgDir) || strings.HasSuffix(imp, pkgDir):
+				matched = true
+			case (strings.HasPrefix(imp, "./") || strings.HasPrefix(imp, "../")) && callerDir != "":
+				resolved := normalizePath(path.Clean(callerDir + "/" + imp))
+				candNoExt := stripPathExt(candPath)
+				resolvedNoExt := stripPathExt(resolved)
+				if candPath == resolved || candNoExt == resolved || candNoExt == resolvedNoExt ||
+					strings.HasPrefix(candPath, resolved+"/") || strings.HasPrefix(candNoExt, resolved+"/") {
+					matched = true
+				}
+			}
+			if matched && !seen[c] {
+				seen[c] = true
 				out = append(out, c)
-				break
 			}
 		}
 	}
 	return out
+}
+
+func normalizePath(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
+func stripPathExt(p string) string {
+	p = normalizePath(p)
+	if i := strings.LastIndexByte(p, '.'); i > strings.LastIndexByte(p, '/') {
+		return p[:i]
+	}
+	return p
+}
+
+// filterBySubtree keeps candidates that share the caller's app/package root
+// (sample/01-cats-app, packages/core, integration/hello-world, …).
+func filterBySubtree(candidates []string, srcPath string, pathOf map[string]string) []string {
+	root := subtreeRoot(srcPath)
+	if root == "" {
+		return nil
+	}
+	var out []string
+	for _, c := range candidates {
+		cp := normalizePath(pathOf[c])
+		if cp == root || strings.HasPrefix(cp, root+"/") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// subtreeRoot returns a stable multi-segment project root for monorepo samples
+// and packages, or "" when the path is not under a recognized layout.
+func subtreeRoot(p string) string {
+	p = normalizePath(p)
+	parts := strings.Split(p, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	switch parts[0] {
+	case "sample", "samples", "integration", "packages", "apps", "services", "modules":
+		return parts[0] + "/" + parts[1]
+	}
+	return ""
 }
 
 func dirOf(p string) string {

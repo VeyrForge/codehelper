@@ -32,3 +32,19 @@ func TestDetectFrameworkPacks(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectFrameworkPacks_LaravelAppNotNextJS(t *testing.T) {
+	t.Parallel()
+	got := DetectFrameworkPacks("app/Models/User.php", nil, "<?php\nnamespace App\\Models;\nclass User {}\n")
+	for _, g := range got {
+		if g == "nextjs" {
+			t.Fatalf("Laravel PHP under app/ must not be tagged nextjs, got %v", got)
+		}
+	}
+	got = DetectFrameworkPacks("app/Http/Controllers/Controller.php", nil, "<?php\nnamespace App\\Http\\Controllers;\nclass Controller {}\n")
+	for _, g := range got {
+		if g == "nextjs" {
+			t.Fatalf("Laravel controller must not be tagged nextjs, got %v", got)
+		}
+	}
+}

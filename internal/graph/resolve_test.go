@@ -368,3 +368,224 @@ func TestDedupeSymrefInserts(t *testing.T) {
 		t.Errorf("e:1 conf=%v want 0.9", got[0].conf)
 	}
 }
+
+func TestResolveSymrefs_PublicAPIPreference(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoID := "repo"
+	st, err := Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	syms := []types.Symbol{
+		{ID: "sym:repo:docs_src/app.py:1:read_items", RepoID: repoID, Name: "read_items", Kind: types.SymbolKindFunction, Path: "docs_src/app.py", LineStart: 1},
+		{ID: "sym:repo:fastapi/params.py:1:Depends", RepoID: repoID, Name: "Depends", Kind: types.SymbolKindClass, Path: "fastapi/params.py", LineStart: 1},
+		{ID: "sym:repo:fastapi/param_functions.py:1:Depends", RepoID: repoID, Name: "Depends", Kind: types.SymbolKindFunction, Path: "fastapi/param_functions.py", LineStart: 1},
+		{ID: "sym:repo:fastapi/applications.py:1:include_router", RepoID: repoID, Name: "include_router", Kind: types.SymbolKindMethod, Path: "fastapi/applications.py", LineStart: 1},
+		{ID: "sym:repo:fastapi/routing.py:1:include_router", RepoID: repoID, Name: "include_router", Kind: types.SymbolKindMethod, Path: "fastapi/routing.py", LineStart: 1},
+	}
+	for _, s := range syms {
+		if err := st.UpsertSymbol(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caller := "sym:repo:docs_src/app.py:1:read_items"
+	for _, e := range []types.Reference{
+		{ID: "e1", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller, TargetID: "symref:repo:docs_src/app.py:Depends", Confidence: 0.5},
+		{ID: "e2", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller, TargetID: "symref:repo:docs_src/app.py:include_router", Confidence: 0.5},
+	} {
+		if err := st.AddEdge(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := st.ResolveSymrefs(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ByStrategy["public_api"] < 2 {
+		t.Fatalf("expected public_api resolutions, got %+v", stats)
+	}
+	if c, _ := st.EdgesTo(ctx, repoID, "sym:repo:fastapi/param_functions.py:1:Depends", "calls"); len(c) != 1 {
+		t.Errorf("Depends should resolve to param_functions, callers=%d", len(c))
+	}
+	if c, _ := st.EdgesTo(ctx, repoID, "sym:repo:fastapi/applications.py:1:include_router", "calls"); len(c) != 1 {
+		t.Errorf("include_router should resolve to applications, callers=%d", len(c))
+	}
+}
+
+func TestResolveSymrefs_DottedAliasNotSplitRecv(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoID := "repo"
+	st, err := Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Express app.use is a unique dotted symbol name — must NOT be split into
+	// recv_type(app)+use and then fail as ambiguous bare "use".
+	syms := []types.Symbol{
+		{ID: "sym:repo:examples/hello.js:1:express_use_1", RepoID: repoID, Name: "express_use_1", Kind: types.SymbolKindFunction, Path: "examples/hello.js", LineStart: 1},
+		{ID: "sym:repo:lib/application.js:1:app.use", RepoID: repoID, Name: "app.use", Kind: types.SymbolKindFunction, Path: "lib/application.js", LineStart: 1},
+		{ID: "sym:repo:lib/router.js:1:use", RepoID: repoID, Name: "use", Kind: types.SymbolKindFunction, Path: "lib/router.js", LineStart: 1},
+		{ID: "sym:repo:lib/utils.js:1:use", RepoID: repoID, Name: "use", Kind: types.SymbolKindFunction, Path: "lib/utils.js", LineStart: 1},
+	}
+	for _, s := range syms {
+		if err := st.UpsertSymbol(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caller := "sym:repo:examples/hello.js:1:express_use_1"
+	if err := st.AddEdge(ctx, types.Reference{
+		ID: "e1", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller,
+		TargetID: "symref:repo:examples/hello.js:app.use", Confidence: 0.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.ResolveSymrefs(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Resolved != 1 || stats.ByStrategy["unique"] != 1 {
+		t.Fatalf("expected unique resolve of app.use, got %+v", stats)
+	}
+	if c, _ := st.EdgesTo(ctx, repoID, "sym:repo:lib/application.js:1:app.use", "calls"); len(c) != 1 {
+		t.Errorf("app.use should have 1 caller, got %d", len(c))
+	}
+}
+
+func TestResolveSymrefs_RelativeImportJS(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoID := "repo"
+	st, err := Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// Nest-style: CoreModule imports ./interceptors/transform.interceptor while
+	// two TransformInterceptor defs exist across samples.
+	syms := []types.Symbol{
+		{ID: "sym:repo:sample/01-cats/core/core.module.ts:1:CoreModule", RepoID: repoID, Name: "CoreModule", Kind: types.SymbolKindClass, Path: "sample/01-cats/core/core.module.ts", LineStart: 1},
+		{ID: "sym:repo:sample/01-cats/core/interceptors/transform.interceptor.ts:1:TransformInterceptor", RepoID: repoID, Name: "TransformInterceptor", Kind: types.SymbolKindClass, Path: "sample/01-cats/core/interceptors/transform.interceptor.ts", LineStart: 1},
+		{ID: "sym:repo:sample/10-fastify/core/interceptors/transform.interceptor.ts:1:TransformInterceptor", RepoID: repoID, Name: "TransformInterceptor", Kind: types.SymbolKindClass, Path: "sample/10-fastify/core/interceptors/transform.interceptor.ts", LineStart: 1},
+	}
+	for _, s := range syms {
+		if err := st.UpsertSymbol(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AddEdge(ctx, types.Reference{
+		ID: "e:imp", RepoID: repoID, Kind: types.RefKindImports,
+		SourceID: "file:repo:sample/01-cats/core/core.module.ts",
+		TargetID: "mod:repo:./interceptors/transform.interceptor", Confidence: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	caller := "sym:repo:sample/01-cats/core/core.module.ts:1:CoreModule"
+	if err := st.AddEdge(ctx, types.Reference{
+		ID: "e:call", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller,
+		TargetID: "symref:repo:sample/01-cats/core/core.module.ts:TransformInterceptor", Confidence: 0.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.ResolveSymrefs(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ByStrategy["import"] != 1 {
+		t.Fatalf("expected relative import resolution, got %+v", stats)
+	}
+	want := "sym:repo:sample/01-cats/core/interceptors/transform.interceptor.ts:1:TransformInterceptor"
+	if c, _ := st.EdgesTo(ctx, repoID, want, "calls"); len(c) != 1 {
+		t.Errorf("want inbound to cats TransformInterceptor, callers=%d", len(c))
+	}
+	bad := "sym:repo:sample/10-fastify/core/interceptors/transform.interceptor.ts:1:TransformInterceptor"
+	if c, _ := st.EdgesTo(ctx, repoID, bad, "calls"); len(c) != 0 {
+		t.Errorf("must not resolve to fastify sample, callers=%d", len(c))
+	}
+}
+
+func TestResolveSymrefs_SameSubtree(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoID := "repo"
+	st, err := Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	// No imports: same_subtree should pick the interceptor under the same sample app.
+	syms := []types.Symbol{
+		{ID: "sym:repo:sample/01-cats/core/core.module.ts:1:CoreModule", RepoID: repoID, Name: "CoreModule", Kind: types.SymbolKindClass, Path: "sample/01-cats/core/core.module.ts", LineStart: 1},
+		{ID: "sym:repo:sample/01-cats/core/interceptors/logging.interceptor.ts:1:LoggingInterceptor", RepoID: repoID, Name: "LoggingInterceptor", Kind: types.SymbolKindClass, Path: "sample/01-cats/core/interceptors/logging.interceptor.ts", LineStart: 1},
+		{ID: "sym:repo:sample/10-fastify/core/interceptors/logging.interceptor.ts:1:LoggingInterceptor", RepoID: repoID, Name: "LoggingInterceptor", Kind: types.SymbolKindClass, Path: "sample/10-fastify/core/interceptors/logging.interceptor.ts", LineStart: 1},
+	}
+	for _, s := range syms {
+		if err := st.UpsertSymbol(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caller := "sym:repo:sample/01-cats/core/core.module.ts:1:CoreModule"
+	if err := st.AddEdge(ctx, types.Reference{
+		ID: "e:call", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller,
+		TargetID: "symref:repo:sample/01-cats/core/core.module.ts:LoggingInterceptor", Confidence: 0.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.ResolveSymrefs(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ByStrategy["same_subtree"] != 1 {
+		t.Fatalf("expected same_subtree, got %+v", stats)
+	}
+	want := "sym:repo:sample/01-cats/core/interceptors/logging.interceptor.ts:1:LoggingInterceptor"
+	if c, _ := st.EdgesTo(ctx, repoID, want, "calls"); len(c) != 1 {
+		t.Errorf("want inbound to cats LoggingInterceptor, callers=%d", len(c))
+	}
+}
+
+func TestResolveSymrefs_NonFixturePreference(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoID := "repo"
+	st, err := Open(filepath.Join(t.TempDir(), "graph.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	syms := []types.Symbol{
+		{ID: "sym:repo:packages/core/app.ts:1:caller", RepoID: repoID, Name: "caller", Kind: types.SymbolKindFunction, Path: "packages/core/app.ts", LineStart: 1},
+		{ID: "sym:repo:sample/01-cats/cats.service.ts:1:CatsService", RepoID: repoID, Name: "CatsService", Kind: types.SymbolKindClass, Path: "sample/01-cats/cats.service.ts", LineStart: 1},
+		{ID: "sym:repo:packages/cats/cats.service.ts:1:CatsService", RepoID: repoID, Name: "CatsService", Kind: types.SymbolKindClass, Path: "packages/cats/cats.service.ts", LineStart: 1},
+	}
+	for _, s := range syms {
+		if err := st.UpsertSymbol(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caller := "sym:repo:packages/core/app.ts:1:caller"
+	if err := st.AddEdge(ctx, types.Reference{
+		ID: "e1", RepoID: repoID, Kind: types.RefKindCalls, SourceID: caller,
+		TargetID: "symref:repo:packages/core/app.ts:CatsService", Confidence: 0.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := st.ResolveSymrefs(ctx, repoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ByStrategy["non_fixture"] != 1 {
+		t.Fatalf("expected non_fixture resolution, got %+v", stats)
+	}
+	if c, _ := st.EdgesTo(ctx, repoID, "sym:repo:packages/cats/cats.service.ts:1:CatsService", "calls"); len(c) != 1 {
+		t.Errorf("should prefer packages/ over sample/, callers=%d", len(c))
+	}
+}

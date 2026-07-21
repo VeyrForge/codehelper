@@ -10,6 +10,7 @@ import (
 
 	"github.com/VeyrForge/codehelper/internal/graph"
 	"github.com/VeyrForge/codehelper/internal/registry"
+	"github.com/VeyrForge/codehelper/internal/review"
 	"github.com/VeyrForge/codehelper/pkg/types"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -81,6 +82,19 @@ type renameCandidate struct {
 	Recv string `json:"recv,omitempty"`
 }
 
+const (
+	// renamePreviewMaxTextualSites caps how many textual-only sites ship in a
+	// preview response. Fiber Listen dry-runs previously dumped ~64k chars of
+	// README / ISSUE_TEMPLATE hits and drowned the graph-confirmed plan.
+	renamePreviewMaxTextualSites = 16
+	renamePreviewMaxTextualFiles = 6
+	// renamePreviewMaxGraphSites caps graph-confirmed sites in the preview
+	// payload (counts remain exact). Hub symbols like Fiber Listen otherwise
+	// emit tens of KB of before/after lines from tests alone.
+	renamePreviewMaxGraphSites = 40
+	renamePreviewMaxFiles      = 12
+)
+
 type renameSymbolResponse struct {
 	Applied              bool              `json:"applied"`
 	Name                 string            `json:"name"`
@@ -91,6 +105,7 @@ type renameSymbolResponse struct {
 	Files                []renameFilePlan  `json:"files,omitempty"`
 	GraphConfirmedCount  int               `json:"graph_confirmed_count"`
 	TextualOnlyCount     int               `json:"textual_only_count"`
+	TextualOnlyTruncated int               `json:"textual_only_truncated,omitempty"`
 	AppliedSiteCount     int               `json:"applied_site_count,omitempty"`
 	RevertTokens         []string          `json:"revert_tokens,omitempty"`
 	Note                 string            `json:"note"`
@@ -225,15 +240,28 @@ func renameSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			To:         to,
 			Definition: fmt.Sprintf("%s:%d", def.Path, def.LineStart),
 		}
-		// Stable, readable ordering.
+		// Stable ordering: graph-confirmed files first, then path.
+		type fileScore struct {
+			pl    *renameFilePlan
+			graph int
+		}
+		scored := make([]fileScore, 0, len(plans))
+		fullFiles := make([]renameFilePlan, 0, len(plans))
 		for _, pl := range plans {
 			sort.Slice(pl.GraphConfirmed, func(i, j int) bool { return pl.GraphConfirmed[i].Line < pl.GraphConfirmed[j].Line })
 			sort.Slice(pl.TextualOnly, func(i, j int) bool { return pl.TextualOnly[i].Line < pl.TextualOnly[j].Line })
 			out.GraphConfirmedCount += len(pl.GraphConfirmed)
 			out.TextualOnlyCount += len(pl.TextualOnly)
-			out.Files = append(out.Files, *pl)
+			scored = append(scored, fileScore{pl: pl, graph: len(pl.GraphConfirmed)})
+			fullFiles = append(fullFiles, *pl)
 		}
-		sort.Slice(out.Files, func(i, j int) bool { return out.Files[i].Path < out.Files[j].Path })
+		sort.Slice(scored, func(i, j int) bool {
+			if scored[i].graph != scored[j].graph {
+				return scored[i].graph > scored[j].graph
+			}
+			return scored[i].pl.Path < scored[j].pl.Path
+		})
+		sort.Slice(fullFiles, func(i, j int) bool { return fullFiles[i].Path < fullFiles[j].Path })
 		if scanWarn != "" {
 			out.Warnings = append(out.Warnings, scanWarn)
 		}
@@ -241,6 +269,51 @@ func renameSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		apply := argBool(args, "apply", false)
 		includeTextual := argBool(args, "include_textual", false)
 		if !apply {
+			// Cap preview payload so agents see the plan, not a 60KB dump.
+			// Counts (GraphConfirmedCount / TextualOnlyCount) stay exact.
+			graphShown, textualShown, textualFiles, filesShown := 0, 0, 0, 0
+			var graphTrunc, textualTrunc int
+			for _, sc := range scored {
+				if filesShown >= renamePreviewMaxFiles {
+					graphTrunc += len(sc.pl.GraphConfirmed)
+					textualTrunc += len(sc.pl.TextualOnly)
+					continue
+				}
+				pl := *sc.pl
+				// Prefer non-test files in the preview; still count everything.
+				if review.IsTestPath(pl.Path) && graphShown > 0 && filesShown >= renamePreviewMaxFiles/2 {
+					graphTrunc += len(pl.GraphConfirmed)
+					textualTrunc += len(pl.TextualOnly)
+					continue
+				}
+				if len(pl.GraphConfirmed) == 0 && len(pl.TextualOnly) > 0 {
+					if textualFiles >= renamePreviewMaxTextualFiles || textualShown >= renamePreviewMaxTextualSites {
+						textualTrunc += len(pl.TextualOnly)
+						continue
+					}
+					textualFiles++
+				}
+				if remain := renamePreviewMaxGraphSites - graphShown; remain >= 0 && len(pl.GraphConfirmed) > remain {
+					graphTrunc += len(pl.GraphConfirmed) - remain
+					pl.GraphConfirmed = pl.GraphConfirmed[:remain]
+				}
+				if remain := renamePreviewMaxTextualSites - textualShown; remain >= 0 && len(pl.TextualOnly) > remain {
+					textualTrunc += len(pl.TextualOnly) - remain
+					pl.TextualOnly = pl.TextualOnly[:remain]
+				}
+				graphShown += len(pl.GraphConfirmed)
+				textualShown += len(pl.TextualOnly)
+				if len(pl.GraphConfirmed) > 0 || len(pl.TextualOnly) > 0 {
+					out.Files = append(out.Files, pl)
+					filesShown++
+				}
+			}
+			out.TextualOnlyTruncated = textualTrunc
+			if graphTrunc > 0 || textualTrunc > 0 {
+				out.Warnings = append(out.Warnings, fmt.Sprintf(
+					"preview truncated (%d graph-confirmed + %d textual-only site(s) omitted from payload; counts above are complete). Docs/.github/examples are excluded from the textual scan.",
+					graphTrunc, textualTrunc))
+			}
 			out.Note = "preview only — pass apply=true to write graph-confirmed sites (add include_textual=true to also write textual-only sites). " + symbolEditHeuristicNote
 			out.RecommendedNextTools = []string{"impact", "context", "rename_symbol"}
 			out.Confidence = 0.7
@@ -252,8 +325,10 @@ func renameSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 
 		// Apply path: rewrite the exact identifier occurrences, snapshotting each
 		// touched file so revert_workspace_edit can undo it. Graph-confirmed always;
-		// textual-only only when include_textual=true.
-		applied, tokens, applyWarns := applyRenameSites(repo.RootPath, out.Files, includeTextual)
+		// textual-only only when include_textual=true. Use the FULL site list
+		// (not the preview-truncated view).
+		applied, tokens, applyWarns := applyRenameSites(repo.RootPath, fullFiles, includeTextual)
+		out.Files = fullFiles
 		out.Applied = true
 		out.AppliedSiteCount = applied
 		out.RevertTokens = tokens
@@ -521,6 +596,9 @@ func scanTextualOccurrences(root, oldName, newName string, confirmed map[string]
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if skipTextualScanPath(rel) {
+			return nil
+		}
 		lines, lerr := readFileLines(p)
 		if lerr != nil {
 			return nil
@@ -796,25 +874,38 @@ func insertionPreview(lines []string, insertBefore int, block string, ctx int) s
 	return sb.String()
 }
 
-// skipScanDir skips vendored / VCS / build directories during the textual scan.
+// skipScanDir skips vendored / VCS / build / docs-noise directories during the textual scan.
 func skipScanDir(name string) bool {
 	switch name {
 	case ".git", ".hg", ".svn", "node_modules", "vendor", "dist", "build",
-		".codehelper", "target", "__pycache__", ".venv", "venv", ".idea", ".vscode":
+		".codehelper", "target", "__pycache__", ".venv", "venv", ".idea", ".vscode",
+		".github", "docs", "documentation", "examples", "example", "fixtures", "testdata":
 		return true
 	}
 	return false
 }
 
-// looksLikeSource keeps common text/source extensions for the textual scan and
-// drops obvious binaries.
+// skipTextualScanPath drops non-code paths that flood rename previews (READMEs,
+// changelogs, issue templates already covered by .github skip).
+func skipTextualScanPath(rel string) bool {
+	base := strings.ToLower(filepath.Base(rel))
+	switch base {
+	case "readme.md", "readme.txt", "changelog.md", "license", "license.md", "copying":
+		return true
+	}
+	return false
+}
+
+// looksLikeSource keeps code extensions for the textual rename scan. Docs and
+// config (.md/.txt/.yml) are excluded — they dominated Fiber Listen dry-runs
+// (~64k chars of textual-only noise) without being safe auto-rename targets.
 func looksLikeSource(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
-	case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rb", ".rs", ".java",
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".rs", ".java",
 		".kt", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".php", ".swift",
-		".scala", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".sql",
-		".sh", ".proto", ".graphql", ".vue", ".svelte":
+		".scala", ".sql", ".sh", ".proto", ".graphql", ".vue", ".svelte",
+		".ex", ".exs", ".gd":
 		return true
 	}
 	return false

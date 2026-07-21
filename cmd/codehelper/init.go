@@ -5,10 +5,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/VeyrForge/codehelper/internal/connections"
 	"github.com/VeyrForge/codehelper/internal/gitutil"
+	"github.com/VeyrForge/codehelper/internal/helpcatalog"
 	"github.com/VeyrForge/codehelper/internal/hints"
+	"github.com/VeyrForge/codehelper/internal/profile"
 	"github.com/VeyrForge/codehelper/internal/projcfg"
 	"github.com/VeyrForge/codehelper/internal/setup"
+	"github.com/VeyrForge/codehelper/internal/setupsuggest"
 	"github.com/spf13/cobra"
 )
 
@@ -66,7 +70,7 @@ func initCmd() *cobra.Command {
 			if !noMCP {
 				// Editor wiring is a convenience, not load-bearing for indexing —
 				// warn but don't fail init over any of these steps.
-				if written, err := setup.ProjectMCP(gitRoot, "codehelper"); err != nil {
+				if written, err := setup.ProjectMCP(gitRoot, setup.ResolveBinary()); err != nil {
 					fmt.Fprintln(os.Stderr, "init: MCP config:", err)
 				} else {
 					for _, p := range written {
@@ -96,8 +100,27 @@ func initCmd() *cobra.Command {
 				} else {
 					fmt.Fprintln(os.Stderr, "init: wrote tool-first rules (CLAUDE.md block + .cursor/rules/codehelper.mdc) so the agent actually calls the tools")
 				}
+				if err := helpcatalog.WriteProjectReference(gitRoot); err != nil {
+					fmt.Fprintln(os.Stderr, "init: MCP_TOOLS.md:", err)
+				} else {
+					fmt.Fprintln(os.Stderr, "init: wrote .codehelper/MCP_TOOLS.md tool catalog")
+				}
 				hints.EnsureBuiltin()
 				fmt.Fprintln(os.Stderr, "init: Cursor, Claude Code & Codex are set to load codehelper's tools for this project")
+			}
+			// Stack-aware browser/CMS setup suggestions (propose to user; do not invent secrets).
+			if pr, perr := profile.ReadOrGenerate(gitRoot); perr == nil && pr != nil {
+				conn, _ := connections.Load(gitRoot)
+				sug := setupsuggest.Build(setupsuggest.Input{
+					RepoRoot:    gitRoot,
+					ProjectType: pr.ProjectType,
+					Framework:   pr.Framework,
+					Connections: conn,
+					Projcfg:     pcfg,
+					IncludeMCP:  true,
+					BinaryHint:  setup.ResolveBinary(),
+				})
+				fmt.Fprint(os.Stderr, setupsuggest.FormatText(sug))
 			}
 			fmt.Fprintln(os.Stderr, "init: ready — index + watch daemon active for", gitRoot)
 			return nil

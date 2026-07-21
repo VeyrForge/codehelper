@@ -91,6 +91,39 @@ func TestASTQuery_ScannerReusableAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestASTQuery_SvelteScriptBodies(t *testing.T) {
+	src := []byte(`<script>
+  export function toggle() {
+    return true;
+  }
+</script>
+<button on:click={toggle}>Go</button>
+`)
+	out := scanOne(t, "svelte", `(function_declaration name: (identifier) @fn)`, "Toggle.svelte", src, 50)
+	if len(out) != 1 || out[0].Text != "toggle" {
+		t.Fatalf("expected toggle in script AST, got %+v", out)
+	}
+	// Script starts on line 2 of the SFC (line 1 is <script>).
+	if out[0].Line != 2 {
+		t.Fatalf("line remap: got %d want 2", out[0].Line)
+	}
+	if out[0].Path != "Toggle.svelte" {
+		t.Fatalf("path=%q", out[0].Path)
+	}
+}
+
+func TestNewASTScanner_SvelteSupported(t *testing.T) {
+	s, err := NewASTScanner("svelte", `(function_declaration name: (identifier) @fn)`)
+	if err != nil {
+		t.Fatalf("svelte must be supported: %v", err)
+	}
+	s.Close()
+	exts := ExtensionsForASTLanguage("svelte")
+	if len(exts) != 1 || exts[0] != ".svelte" {
+		t.Fatalf("svelte extensions: %v", exts)
+	}
+}
+
 func TestNewASTScanner_Errors(t *testing.T) {
 	if _, err := NewASTScanner("cobol", `(x)`); err == nil {
 		t.Error("expected error for unsupported language")

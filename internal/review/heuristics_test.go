@@ -73,6 +73,30 @@ func TestIsTestPath(t *testing.T) {
 	}
 }
 
+func TestIsSecondaryNoisePath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"docs_src/dependencies/tutorial001.py", true},
+		{"sample/01-cats-app/main.ts", true},
+		{"integration/injector/e2e.ts", true},
+		{"examples/hello/index.js", true},
+		{"test/acceptance/route.js", true},
+		{"packages/svelte/tests/snapshot/samples/x/_expected/main.js", true},
+		{"fixtures/data.json", true},
+		{".github/testdata/index.html", true},
+		{"packages/core/src/injector.ts", false},
+		{"fastapi/applications.py", false},
+		{"lib/application.js", false},
+	}
+	for _, tc := range tests {
+		if got := IsSecondaryNoisePath(tc.path); got != tc.want {
+			t.Errorf("IsSecondaryNoisePath(%q)=%v want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestIsBehavioralSymbolKind(t *testing.T) {
 	for _, k := range []string{"function", "method", "FUNCTION", " Method "} {
 		if !IsBehavioralSymbolKind(k) {

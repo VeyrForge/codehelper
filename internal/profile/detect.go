@@ -25,12 +25,17 @@ var (
 	pyReqRe     = regexp.MustCompile(`requires-python\s*=\s*"([^"]+)"`)
 )
 
-// cleanVer trims constraint noise (^ ~ >= leading v, surrounding space) so a
-// dependency spec like "^12.0" or ">=8.2" reads as a version, while keeping the
-// meaningful digits.
+// cleanVer trims constraint noise (^ ~ >= leading v, surrounding space/quotes)
+// so a dependency spec like "^12.0" or ">=8.2" reads as a version, while keeping
+// the meaningful digits. Also strips trailing quote/comma leftovers from TOML
+// list parsing (e.g. `django>=4.2",` → `4.2`).
 func cleanVer(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimLeft(s, "^~>=< vV")
+	s = strings.Trim(s, `"'`+"`")
+	s = strings.TrimRight(s, ",]")
+	s = strings.TrimSpace(s)
+	s = strings.TrimLeft(s, "^~>=<! vV")
+	s = strings.Trim(s, `"'`+"`")
 	return strings.TrimSpace(s)
 }
 
@@ -69,6 +74,19 @@ func cargoVersion(content string) string {
 
 func pythonRequires(content string) string {
 	if m := pyReqRe.FindStringSubmatch(content); m != nil {
+		return cleanVer(m[1])
+	}
+	return ""
+}
+
+var mixElixirRe = regexp.MustCompile(`elixir:\s*"([^"]+)"`)
+
+// mixElixirVersion reads the elixir: requirement from mix.exs (project/ or @elixir_requirement).
+func mixElixirVersion(content string) string {
+	if m := regexp.MustCompile(`@elixir_requirement\s+"([^"]+)"`).FindStringSubmatch(content); m != nil {
+		return cleanVer(m[1])
+	}
+	if m := mixElixirRe.FindStringSubmatch(content); m != nil {
 		return cleanVer(m[1])
 	}
 	return ""

@@ -103,7 +103,11 @@ func ParseGo(ctx context.Context, repoID, relPath string, buf []byte) (*ParseRes
 					}
 					sig += "embeds=" + strings.Join(embedded, ",")
 				}
-				sym := symbol(repoID, relPath, name, types.SymbolKindClass, int(spec.StartPoint().Row)+1, int(spec.EndPoint().Row)+1, "go", sig, "")
+				kind := types.SymbolKindClass
+				if t := spec.ChildByFieldName("type"); t != nil && t.Type() == "interface_type" {
+					kind = types.SymbolKindInterface
+				}
+				sym := symbol(repoID, relPath, name, kind, int(spec.StartPoint().Row)+1, int(spec.EndPoint().Row)+1, "go", sig, "")
 				out.Symbols = append(out.Symbols, sym)
 				out.Edges = append(out.Edges, containsEdge(repoID, relPath, sym.ID))
 			}

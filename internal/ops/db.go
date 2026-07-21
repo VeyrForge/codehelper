@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/VeyrForge/codehelper/internal/connections"
 	_ "modernc.org/sqlite"
 )
@@ -35,6 +38,7 @@ type TableSchema struct {
 }
 
 // QueryDB runs a read-only SQL query against a named connection profile.
+// Supported in-process drivers: sqlite, mysql (MariaDB).
 func QueryDB(ctx context.Context, repoRoot, connName, sqlText string, maxRows int) (*DBQueryResult, error) {
 	if err := ValidateReadOnlySQL(sqlText); err != nil {
 		return nil, err
@@ -45,34 +49,11 @@ func QueryDB(ctx context.Context, repoRoot, connName, sqlText string, maxRows in
 	if maxRows > maxDBRows {
 		maxRows = maxDBRows
 	}
-	cfg, err := connections.Load(repoRoot)
+	db, err := findDB(repoRoot, connName)
 	if err != nil {
 		return nil, err
 	}
-	var db *connections.DBConn
-	for i := range cfg.Databases {
-		if strings.EqualFold(cfg.Databases[i].Name, connName) {
-			db = &cfg.Databases[i]
-			break
-		}
-	}
-	if db == nil {
-		return nil, fmt.Errorf("database connection %q not configured", connName)
-	}
-	if db.Disabled {
-		return nil, fmt.Errorf("database connection %q is disabled", connName)
-	}
-	if !db.ReadOnly {
-		return nil, fmt.Errorf("database connection %q is not marked read-only — MCP db_query requires read_only=true", connName)
-	}
-	dsn, err := sqliteDSN(repoRoot, *db)
-	if err != nil {
-		return nil, err
-	}
-	if strings.ToLower(db.Driver) != "sqlite" {
-		return nil, fmt.Errorf("driver %q: in-process query supported for sqlite only in this release", db.Driver)
-	}
-	sqldb, err := sql.Open("sqlite", dsn)
+	sqldb, _, err := openSQLDB(repoRoot, *db)
 	if err != nil {
 		return nil, err
 	}
@@ -112,36 +93,13 @@ func QueryDB(ctx context.Context, repoRoot, connName, sqlText string, maxRows in
 	return out, rows.Err()
 }
 
-// SchemaDB returns table/column info for sqlite connections.
+// SchemaDB returns table/column info for sqlite and mysql connections.
 func SchemaDB(ctx context.Context, repoRoot, connName string, tables []string) (*DBSchemaResult, error) {
-	cfg, err := connections.Load(repoRoot)
+	db, err := findDB(repoRoot, connName)
 	if err != nil {
 		return nil, err
 	}
-	var db *connections.DBConn
-	for i := range cfg.Databases {
-		if strings.EqualFold(cfg.Databases[i].Name, connName) {
-			db = &cfg.Databases[i]
-			break
-		}
-	}
-	if db == nil {
-		return nil, fmt.Errorf("database connection %q not configured", connName)
-	}
-	if db.Disabled {
-		return nil, fmt.Errorf("database connection %q is disabled", connName)
-	}
-	if !db.ReadOnly {
-		return nil, fmt.Errorf("database connection %q is not marked read-only", connName)
-	}
-	if strings.ToLower(db.Driver) != "sqlite" {
-		return nil, fmt.Errorf("schema introspection supported for sqlite only in this release")
-	}
-	dsn, err := sqliteDSN(repoRoot, *db)
-	if err != nil {
-		return nil, err
-	}
-	sqldb, err := sql.Open("sqlite", dsn)
+	sqldb, driver, err := openSQLDB(repoRoot, *db)
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +107,70 @@ func SchemaDB(ctx context.Context, repoRoot, connName string, tables []string) (
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	switch driver {
+	case "sqlite":
+		return schemaSQLite(cctx, sqldb, db.Name, tables)
+	case "mysql":
+		return schemaMySQL(cctx, sqldb, db.Name, tables)
+	default:
+		return nil, fmt.Errorf("schema introspection supported for sqlite|mysql only (got %q)", driver)
+	}
+}
+
+func findDB(repoRoot, connName string) (*connections.DBConn, error) {
+	cfg, err := connections.Load(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cfg.Databases {
+		if strings.EqualFold(cfg.Databases[i].Name, connName) {
+			db := &cfg.Databases[i]
+			if db.Disabled {
+				return nil, fmt.Errorf("database connection %q is disabled", connName)
+			}
+			if !db.ReadOnly {
+				return nil, fmt.Errorf("database connection %q is not marked read-only — MCP db_query requires read_only=true", connName)
+			}
+			return db, nil
+		}
+	}
+	return nil, fmt.Errorf("database connection %q not configured", connName)
+}
+
+func openSQLDB(repoRoot string, db connections.DBConn) (*sql.DB, string, error) {
+	if strings.TrimSpace(db.SSHTunnel) != "" {
+		return nil, "", fmt.Errorf("ssh_tunnel on %q is not supported for in-process db_query yet", db.Name)
+	}
+	switch strings.ToLower(db.Driver) {
+	case "sqlite":
+		dsn, err := sqliteDSN(repoRoot, db)
+		if err != nil {
+			return nil, "", err
+		}
+		sqldb, err := sql.Open("sqlite", dsn)
+		return sqldb, "sqlite", err
+	case "mysql":
+		dsn, err := mysqlDSN(repoRoot, db)
+		if err != nil {
+			return nil, "", err
+		}
+		sqldb, err := sql.Open("mysql", dsn)
+		if err != nil {
+			return nil, "", err
+		}
+		sqldb.SetConnMaxLifetime(30 * time.Second)
+		sqldb.SetMaxOpenConns(2)
+		sqldb.SetMaxIdleConns(1)
+		return sqldb, "mysql", nil
+	default:
+		return nil, "", fmt.Errorf("driver %q: in-process query supported for sqlite|mysql in this release", db.Driver)
+	}
+}
+
+func schemaSQLite(ctx context.Context, sqldb *sql.DB, connName string, tables []string) (*DBSchemaResult, error) {
 	names := tables
 	if len(names) == 0 {
-		rows, err := sqldb.QueryContext(cctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 50`)
+		rows, err := sqldb.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 50`)
 		if err != nil {
 			return nil, err
 		}
@@ -164,13 +183,13 @@ func SchemaDB(ctx context.Context, repoRoot, connName string, tables []string) (
 			names = append(names, n)
 		}
 	}
-	res := &DBSchemaResult{Connection: db.Name}
+	res := &DBSchemaResult{Connection: connName}
 	for _, tbl := range names {
 		if !safeIdent(tbl) {
 			continue
 		}
 		q := fmt.Sprintf(`PRAGMA table_info(%q)`, tbl)
-		rows, err := sqldb.QueryContext(cctx, q)
+		rows, err := sqldb.QueryContext(ctx, q)
 		if err != nil {
 			continue
 		}
@@ -194,6 +213,54 @@ func SchemaDB(ctx context.Context, repoRoot, connName string, tables []string) (
 	return res, nil
 }
 
+func schemaMySQL(ctx context.Context, sqldb *sql.DB, connName string, tables []string) (*DBSchemaResult, error) {
+	names := tables
+	if len(names) == 0 {
+		rows, err := sqldb.QueryContext(ctx, `SHOW TABLES`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return nil, err
+			}
+			names = append(names, n)
+			if len(names) >= 50 {
+				break
+			}
+		}
+	}
+	res := &DBSchemaResult{Connection: connName}
+	for _, tbl := range names {
+		if !safeIdent(tbl) {
+			continue
+		}
+		q := fmt.Sprintf("SHOW COLUMNS FROM `%s`", tbl)
+		rows, err := sqldb.QueryContext(ctx, q)
+		if err != nil {
+			continue
+		}
+		ts := TableSchema{Name: tbl}
+		for rows.Next() {
+			var field, typ string
+			var null, key, extra sql.NullString
+			var def sql.NullString
+			if err := rows.Scan(&field, &typ, &null, &key, &def, &extra); err != nil {
+				rows.Close()
+				break
+			}
+			ts.Columns = append(ts.Columns, field+" "+typ)
+		}
+		rows.Close()
+		if len(ts.Columns) > 0 {
+			res.Tables = append(res.Tables, ts)
+		}
+	}
+	return res, nil
+}
+
 func sqliteDSN(repoRoot string, db connections.DBConn) (string, error) {
 	path := strings.TrimSpace(db.Database)
 	if path == "" {
@@ -206,6 +273,52 @@ func sqliteDSN(repoRoot string, db connections.DBConn) (string, error) {
 		path = filepath.Join(repoRoot, path)
 	}
 	return "file:" + filepath.ToSlash(path) + "?mode=ro", nil
+}
+
+func mysqlDSN(repoRoot string, db connections.DBConn) (string, error) {
+	host := strings.TrimSpace(db.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !(ip.IsLoopback() || ip.IsPrivate()) {
+			return "", fmt.Errorf("mysql host %q refused — db_query allows loopback/private only", host)
+		}
+	} else {
+		hl := strings.ToLower(host)
+		if hl != "localhost" && !strings.HasSuffix(hl, ".local") && !strings.HasSuffix(hl, ".localhost") {
+			return "", fmt.Errorf("mysql host %q refused — use 127.0.0.1/localhost/*.local for in-process query", host)
+		}
+	}
+	port := db.Port
+	if port <= 0 {
+		port = 3306
+	}
+	user := strings.TrimSpace(db.User)
+	if user == "" {
+		return "", fmt.Errorf("mysql connection %q needs user=", db.Name)
+	}
+	dbname := strings.TrimSpace(db.Database)
+	if dbname == "" {
+		return "", fmt.Errorf("mysql connection %q needs database=", db.Name)
+	}
+	pass, err := ResolveRef(repoRoot, db.PasswordRef, db.Name)
+	if err != nil {
+		return "", fmt.Errorf("resolve db password: %w", err)
+	}
+	cfg := mysql.Config{
+		User:                 user,
+		Passwd:               pass,
+		Net:                  "tcp",
+		Addr:                 net.JoinHostPort(host, strconv.Itoa(port)),
+		DBName:               dbname,
+		ParseTime:            true,
+		AllowNativePasswords: true,
+		Timeout:              10 * time.Second,
+		ReadTimeout:          10 * time.Second,
+		WriteTimeout:         10 * time.Second,
+	}
+	return cfg.FormatDSN(), nil
 }
 
 func safeIdent(s string) bool {

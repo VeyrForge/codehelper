@@ -20,6 +20,8 @@ const (
 	FrameworkWordPress FrameworkPack = "wordpress"
 	FrameworkDjango    FrameworkPack = "django"
 	FrameworkFastAPI   FrameworkPack = "fastapi"
+	FrameworkNestJS    FrameworkPack = "nestjs"
+	FrameworkExpress   FrameworkPack = "express"
 )
 
 // DetectFrameworkPacks detects likely framework families from path/imports/content.
@@ -28,11 +30,24 @@ func DetectFrameworkPacks(relPath string, imports []string, content string) []st
 	imps := strings.ToLower(strings.Join(imports, "\n"))
 	body := strings.ToLower(content)
 	out := map[string]struct{}{}
+	ext := strings.ToLower(filepath.Ext(p))
+	isJS := ext == ".js" || ext == ".jsx" || ext == ".ts" || ext == ".tsx" || ext == ".mjs" || ext == ".cjs"
 
 	if strings.Contains(imps, "from \"react\"") || strings.Contains(imps, "from 'react'") || strings.Contains(p, ".jsx") || strings.Contains(p, ".tsx") {
 		out[string(FrameworkReact)] = struct{}{}
 	}
-	if strings.Contains(p, "app/") || strings.Contains(p, "pages/") || strings.Contains(p, "next.config.") || strings.Contains(body, "next/") || strings.Contains(body, "nextresponse") {
+	// Next.js: require JS/TS paths or Next-specific markers. Do NOT treat bare
+	// Laravel/PHP `app/` directories as Next.js (that mis-tagged Eloquent models).
+	if strings.Contains(p, "next.config.") || strings.Contains(body, "next/") || strings.Contains(body, "nextresponse") ||
+		(isJS && (strings.Contains(p, "/pages/") || strings.HasPrefix(p, "pages/") ||
+			strings.Contains(p, "/app/page.") || strings.HasPrefix(p, "app/page.") ||
+			strings.Contains(p, "/app/layout.") || strings.HasPrefix(p, "app/layout.") ||
+			strings.Contains(p, "/app/route.") || strings.HasPrefix(p, "app/route.") ||
+			strings.Contains(p, "/app/loading.") || strings.HasPrefix(p, "app/loading.") ||
+			strings.Contains(p, "/app/error.") || strings.HasPrefix(p, "app/error.") ||
+			strings.Contains(p, "/app/template.") || strings.HasPrefix(p, "app/template.") ||
+			strings.Contains(p, "/app/default.") || strings.HasPrefix(p, "app/default.") ||
+			strings.Contains(p, "/app/not-found.") || strings.HasPrefix(p, "app/not-found."))) {
 		out[string(FrameworkNextJS)] = struct{}{}
 	}
 	if strings.Contains(p, "nuxt.config.") || strings.Contains(body, "from '#app'") || strings.Contains(body, "defineNuxt") {
@@ -58,6 +73,18 @@ func DetectFrameworkPacks(relPath string, imports []string, content string) []st
 	}
 	if strings.Contains(body, "from fastapi import") || strings.Contains(body, "fastapi(") || strings.Contains(body, "apirouter(") {
 		out[string(FrameworkFastAPI)] = struct{}{}
+	}
+	if strings.Contains(body, "@nestjs/") || strings.Contains(body, "@module(") ||
+		strings.Contains(body, "@injectable(") || strings.Contains(body, "@controller(") ||
+		strings.Contains(p, "nest-cli.json") || strings.Contains(p, ".module.ts") ||
+		strings.Contains(p, ".controller.ts") || strings.Contains(p, ".service.ts") {
+		out[string(FrameworkNestJS)] = struct{}{}
+	}
+	if strings.Contains(body, "express()") || strings.Contains(body, "require('express") ||
+		strings.Contains(body, `require("express`) || strings.Contains(body, "from 'express'") ||
+		strings.Contains(body, `from "express"`) || strings.Contains(p, "lib/application.js") ||
+		strings.Contains(p, "lib/express.js") {
+		out[string(FrameworkExpress)] = struct{}{}
 	}
 
 	return sortedKeys(out)

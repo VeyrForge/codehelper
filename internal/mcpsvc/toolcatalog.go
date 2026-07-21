@@ -3,7 +3,7 @@ package mcpsvc
 import "sort"
 
 // MCPParamKeys is a one-line cheat sheet for the most-misused tool parameters.
-const MCPParamKeys = "context/impact→name · change_kit→target · trace→from+to · query→query · kickoff→task · scope→idea"
+const MCPParamKeys = "context/context_bundle/impact→name · change_kit→target · trace→from+to · query/search_hybrid→query · kickoff→task · scope→idea"
 
 // MCPMainTools are the high-frequency tools agents should reach for first.
 var MCPMainTools = []string{
@@ -21,15 +21,18 @@ func IsMainTool(name string) bool {
 	return false
 }
 
-// minimalNavTools are the graph-navigation specialists that minimal mode keeps
-// alongside the main tools. They are codehelper's differentiators over a plain
-// file/grep MCP — callers/callees, blast radius, tests-to-run, interface impls,
-// signatures, and post-edit diagnostics — and mirror the small proven set of a
-// dedicated semantic-code MCP (find_referencing_symbols / find_implementations /
-// get_diagnostics). Advertising them keeps a trimmed surface useful, not crippled.
+// minimalNavTools are the graph-navigation + edit/gate specialists that minimal
+// mode keeps alongside the main tools. They are codehelper's differentiators
+// over a plain file/grep MCP — callers/callees, blast radius, tests-to-run,
+// interface impls, signatures, workspace edits, and post-edit gates — so a
+// trimmed tools/list can still run add→impact→patch→review→finish end-to-end.
 var minimalNavTools = []string{
 	"trace", "impact", "test_impact", "find_implementations",
-	"api_surface", "diagnostics", "rename_symbol", "read_workspace_file",
+	"api_surface", "diagnostics", "rename_symbol", "insert_at_symbol",
+	"search_hybrid", "context_bundle",
+	"read_workspace_file", "write_workspace_file",
+	"apply_patch_workspace_file", "revert_workspace_edit",
+	"review_diff", "review", "finish_check", "dead_code", "hotspots", "since",
 }
 
 // MinimalToolSet is the focused surface advertised in tools/list when minimal
@@ -65,10 +68,10 @@ var mcpToolsByGroup = map[string][]string{
 		"project_context", "scope", "kickoff",
 	},
 	"search": {
-		"query", "scout", "ast_query", "similar", "find_implementations",
+		"query", "search_hybrid", "scout", "ast_query", "similar", "find_implementations",
 	},
 	"graph": {
-		"context", "impact", "trace", "api_surface", "detect_changes", "test_impact", "since",
+		"context", "context_bundle", "impact", "trace", "api_surface", "detect_changes", "test_impact", "since",
 	},
 	"analysis": {
 		"dead_code", "hotspots", "diagnostics",

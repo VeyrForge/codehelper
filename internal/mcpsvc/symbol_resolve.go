@@ -69,7 +69,21 @@ func resolveSymbolByName(ctx context.Context, st *graph.Store, repoID, name, wan
 	if len(exact) == 0 {
 		return nil, nil, fmt.Errorf("no symbol named %q matched path=%q line=%d", name, wantPath, wantLine)
 	}
+	// Prefer production over sample/test when that leaves a unique match (Nest
+	// sample collisions, FastAPI docs_src, Express examples).
+	if pref := preferNonFixtureSymbols(exact); len(pref) == 1 {
+		return &pref[0], nil, nil
+	}
+	// Framework monorepos often ONLY ship samples — pick a stable canonical
+	// tutorial path so bare impact/context still answers without path=.
+	if canon := preferCanonicalSample(exact); canon != nil {
+		return canon, nil, nil
+	}
 	sort.Slice(exact, func(i, j int) bool {
+		fi, fj := isFixtureSymbolPath(exact[i].Path), isFixtureSymbolPath(exact[j].Path)
+		if fi != fj {
+			return !fi && fj // non-fixture first
+		}
 		if exact[i].Path != exact[j].Path {
 			return exact[i].Path < exact[j].Path
 		}
@@ -86,4 +100,71 @@ func resolveSymbolByName(ctx context.Context, st *graph.Store, repoID, name, wan
 		})
 	}
 	return nil, cands, nil
+}
+
+func isFixtureSymbolPath(p string) bool {
+	p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	for _, seg := range []string{
+		"/sample/", "/samples/", "/examples/", "/example/", "/docs_src/",
+		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
+		"/test/", "/tests/", "/__tests__/", "/spec/", "/specs/",
+		"/playground/", "/playgrounds/", "/benchmarking/",
+	} {
+		if strings.Contains(p, seg) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"sample/", "samples/", "examples/", "example/", "docs_src/",
+		"integration/", "fixtures/", "test/", "tests/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func preferNonFixtureSymbols(syms []types.Symbol) []types.Symbol {
+	var out []types.Symbol
+	for _, s := range syms {
+		if !isFixtureSymbolPath(s.Path) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// preferCanonicalSample picks sample/01-* (or lexicographically first sample)
+// when every candidate lives under demo/fixture trees.
+func preferCanonicalSample(syms []types.Symbol) *types.Symbol {
+	if len(syms) == 0 {
+		return nil
+	}
+	for _, s := range syms {
+		if !isFixtureSymbolPath(s.Path) {
+			return nil // mixed set — do not auto-pick a sample
+		}
+	}
+	var best *types.Symbol
+	bestScore := 1 << 30
+	for i := range syms {
+		s := &syms[i]
+		p := strings.ToLower(strings.ReplaceAll(s.Path, "\\", "/"))
+		score := 1000 + len(p)
+		if strings.Contains(p, "/sample/01-") || strings.HasPrefix(p, "sample/01-") {
+			score = 1
+		} else if strings.Contains(p, "/sample/") || strings.HasPrefix(p, "sample/") {
+			score = 10 + len(p)
+		} else if strings.Contains(p, "/examples/") || strings.HasPrefix(p, "examples/") {
+			score = 50 + len(p)
+		} else if strings.Contains(p, "/integration/") {
+			score = 100 + len(p)
+		}
+		if score < bestScore {
+			bestScore = score
+			best = s
+		}
+	}
+	return best
 }

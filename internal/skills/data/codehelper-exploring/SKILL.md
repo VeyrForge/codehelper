@@ -1,22 +1,19 @@
 # codehelper-exploring
 
 When to use:
-- Repository discovery, onboarding, or architecture mapping.
-- User asks "where/how is X implemented?" across packages.
+- Orienting in an unfamiliar area of the repo.
+- Finding where behavior lives before reading files.
 
-Inputs needed:
-- Search topic (feature, error text, symbol, behavior).
-- Optional repo name for multi-repo registries.
+Preferred calls:
+1. `kickoff` `task=<what you're trying to understand>` — one-shot orient + reuse.
+2. `scout` `task=…` when you want reuse candidates + usage_of_top before building.
+3. `query` `query=…` for name/concept search (Locate recipe: query → context → impact).
+4. `context` `name=…` for one symbol (source + callers + callees + blast radius). Pass `path=` when Nest/FastAPI/Express sample collisions appear.
+5. `trace` when you need how A reaches B.
+6. `orchestrate` only when orchestration is enabled (`codehelper orchestration enable`).
 
-Default tool sequence:
-1. `project_context` for the open workspace (omit `repo` on other tools).
-2. `query` with topic-focused terms.
-3. `context` for top hits to inspect callers/callees/imports.
-4. Optional `cypher` for direct relation questions.
-
-Failure and uncertainty behavior:
-- If indexed commit lags HEAD, call out staleness and suggest `codehelper analyze`.
-- Do not broad-scan files before graph-first exploration.
-
-Example prompt:
-- "Find where eval smoke checks are defined and what calls them."
+Avoid:
+- Starting with Read/Grep/Glob when kickoff/query would answer cheaper.
+- Passing `query=` to kickoff as the only param without knowing it is an alias for `task=`.
+- Stopping after `project_context` — it does not search code.
+- Trusting sample/test/fixture or CSS hubs as the "main" definition when a production hit exists (watch `collision_note` / demoted hits).

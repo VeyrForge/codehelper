@@ -16,15 +16,15 @@ func init() {
 	RegisterExtractor([]string{".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"}, Capabilities{Symbols: true, Imports: true, Calls: false, LanguageName: "cpp"}, ParseCpp)
 	RegisterExtractor([]string{".php"}, Capabilities{Symbols: true, Imports: true, Calls: true, LanguageName: "php"}, ParsePHP)
 	RegisterExtractor([]string{".rb"}, Capabilities{Symbols: true, Imports: false, Calls: false, LanguageName: "ruby"}, ParseRuby)
-	RegisterExtractor([]string{".kt", ".kts"}, Capabilities{Symbols: true, Imports: false, Calls: false, LanguageName: "kotlin"}, ParseKotlin)
+	RegisterExtractor([]string{".kt", ".kts"}, Capabilities{Symbols: true, Imports: false, Calls: true, LanguageName: "kotlin"}, ParseKotlin)
 	RegisterExtractor([]string{".swift"}, Capabilities{Symbols: true, Imports: false, Calls: false, LanguageName: "swift"}, ParseSwift)
 	RegisterExtractor([]string{".scala", ".sc"}, Capabilities{Symbols: true, Imports: false, Calls: false, LanguageName: "scala"}, ParseScala)
 	RegisterExtractor([]string{".sh", ".bash"}, Capabilities{Symbols: true, SymbolLite: true, LanguageName: "bash"}, ParseBash)
 	RegisterExtractor([]string{".lua"}, Capabilities{Symbols: true, Calls: false, LanguageName: "lua"}, ParseLua)
-	RegisterExtractor([]string{".ex", ".exs"}, Capabilities{Symbols: true, SymbolLite: true, LanguageName: "elixir"}, ParseElixir)
+	RegisterExtractor([]string{".ex", ".exs"}, Capabilities{Symbols: true, SymbolLite: true, Calls: true, LanguageName: "elixir"}, ParseElixir)
 	RegisterExtractor([]string{".tf", ".tfvars", ".hcl"}, Capabilities{Symbols: true, SymbolLite: true, LanguageName: "hcl"}, ParseHCL)
 	RegisterExtractor([]string{".proto"}, Capabilities{Symbols: true, Imports: false, Calls: false, LanguageName: "protobuf"}, ParseProtobuf)
-	RegisterExtractor([]string{".gd"}, Capabilities{Symbols: true, SymbolLite: true, LanguageName: "gdscript"}, parseGDScriptLite)
+	RegisterExtractor([]string{".gd"}, Capabilities{Symbols: true, SymbolLite: true, Calls: true, LanguageName: "gdscript"}, parseGDScriptLite)
 	// Shader/material languages across engines (Unity, Unreal, Godot) and raw
 	// GL/Vulkan/Metal/WebGPU — one C-family lite extractor (see shaders.go).
 	RegisterExtractor([]string{
@@ -48,7 +48,8 @@ func init() {
 	RegisterExtractor([]string{".dart"}, lite, func(ctx context.Context, repoID, relPath string, buf []byte) (*ParseResult, error) {
 		return parseDartLite(ctx, repoID, relPath, buf)
 	})
-	RegisterExtractor([]string{".vue", ".svelte", ".astro", ".mdx"}, lite, func(ctx context.Context, repoID, relPath string, buf []byte) (*ParseResult, error) {
+	RegisterExtractor([]string{".svelte"}, Capabilities{Symbols: true, Imports: true, Calls: true, LanguageName: "svelte"}, ParseSvelte)
+	RegisterExtractor([]string{".vue", ".astro", ".mdx"}, lite, func(ctx context.Context, repoID, relPath string, buf []byte) (*ParseResult, error) {
 		return parseGenericTextLite(ctx, repoID, relPath, buf)
 	})
 }

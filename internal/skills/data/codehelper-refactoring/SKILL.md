@@ -1,23 +1,15 @@
 # codehelper-refactoring
 
 When to use:
-- Symbol renames, module cleanup, or behavior-preserving structure changes.
+- Renames, extractions, or structural edits to indexed symbols.
 
-Inputs needed:
-- Target symbol id/name and intended replacement.
-- Constraints on public API compatibility.
+Sequence:
+1. `change_kit` `target=<symbol>` — definition, call sites, covering tests, risk.
+2. If symbol missing: follow the error (use `query`, then retry with exact name / `sym:` id).
+3. Prefer `apply_patch_workspace_file` (indent-preserving). Use `write_workspace_file` only for new files or wholesale rewrites; empty content is refused.
+4. `rename_symbol` / `insert_at_symbol` when those fit better than a patch.
+5. `diagnostics` (actionable errors first) → `verify` → `finish_check`.
 
-Default tool sequence:
-1. `impact` with deeper traversal for target symbol.
-2. `rename` in dry-run mode first.
-3. Apply refactor changes in small batches.
-4. Run `detect_changes` to summarize affected symbols.
-5. `verify` to confirm no regressions.
-
-Failure and uncertainty behavior:
-- Preserve public contracts unless explicitly approved to break.
-- If fanout is large, split into smaller commits/PRs.
-- Re-run `codehelper analyze` after large structural refactors.
-
-Example prompt:
-- "Refactor retrieval ranking code without changing public APIs."
+Notes:
+- Hub utilities (`log`, `error`, `cn`, …) often rank high on centrality — confirm with `context` before treating them as the edit target.
+- Do not claim done without the verify loop.

@@ -13,7 +13,11 @@ const maxSubProjects = 16
 var subProjectSkip = map[string]bool{
 	"node_modules": true, "vendor": true, ".vendor": true, ".git": true, ".codehelper": true,
 	"Library": true, "Temp": true, "PackageCache": true, "Binaries": true, "Intermediate": true,
-	"dist": true, "build": true, "target": true, "__pycache__": true, ".venv": true, "venv": true,
+	"dist": true, "build": true, "out": true, "tmp": true, "target": true,
+	"__pycache__": true, ".venv": true, "venv": true,
+	".next": true, ".nuxt": true, ".turbo": true, ".parcel-cache": true, ".output": true,
+	".svelte-kit": true, "storybook-static": true, ".angular": true,
+	"site-packages": true,
 }
 
 // monorepoContainers are conventional directories that hold multiple sub-projects;

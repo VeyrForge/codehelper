@@ -47,8 +47,22 @@ func TestClassifyTaskDeadCode(t *testing.T) {
 	}
 }
 
+func TestClassifyTaskPerfAndSecurity(t *testing.T) {
+	perf := ClassifyTask("performance audit of hotspots and latency", Constraints{}, nil)
+	if perf.Intent != IntentPerf || perf.Workflow != WorkflowPerfAudit {
+		t.Fatalf("perf: intent=%s workflow=%s", perf.Intent, perf.Workflow)
+	}
+	sec := ClassifyTask("security review for injection and hardcoded secrets", Constraints{}, nil)
+	if sec.Intent != IntentSecurity || sec.Workflow != WorkflowSecurityReview {
+		t.Fatalf("security: intent=%s workflow=%s", sec.Intent, sec.Workflow)
+	}
+}
+
 func TestWorkflowStepsNonEmpty(t *testing.T) {
-	for _, wf := range []Workflow{WorkflowBugfixTriage, WorkflowFeatureScope, WorkflowRefactorImpact, WorkflowExplainCode, WorkflowReviewGate, WorkflowDeadCodeScan} {
+	for _, wf := range []Workflow{
+		WorkflowBugfixTriage, WorkflowFeatureScope, WorkflowRefactorImpact, WorkflowExplainCode,
+		WorkflowReviewGate, WorkflowDeadCodeScan, WorkflowPerfAudit, WorkflowSecurityReview,
+	} {
 		steps := WorkflowSteps(wf)
 		if len(steps) == 0 {
 			t.Fatalf("no steps for %s", wf)

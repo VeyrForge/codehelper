@@ -16,8 +16,12 @@ func TestInstall_WritesVersionStamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read version stamp: %v", err)
 	}
-	if strings.TrimSpace(string(b)) != "1.0.0" {
+	if strings.TrimSpace(string(b)) != "1.3.0" {
 		t.Fatalf("unexpected version stamp: %q", string(b))
+	}
+	browserSkill := filepath.Join(dest, "codehelper-browser", "SKILL.md")
+	if _, err := os.Stat(browserSkill); err != nil {
+		t.Fatalf("expected codehelper-browser skill: %v", err)
 	}
 }
 
