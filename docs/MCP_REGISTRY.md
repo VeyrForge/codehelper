@@ -38,7 +38,7 @@ Go binaries are **not** a native registry package type; MCPB is the supported bi
 
 | Directory | How to list |
 |-----------|-------------|
-| **Glama** | Auto-indexes public GitHub repos with `mcp` / `mcp-server` topics. [`glama.json`](../glama.json) lists `VeyrForgeAdmin` as maintainer — on [glama.ai](https://glama.ai) open the Codehelper server page and **Login with GitHub to claim** (use the VeyrForgeAdmin account). |
+| **Glama** | Auto-indexes public GitHub repos with `mcp` / `mcp-server` topics. Claim via [`glama.json`](../glama.json) (`maintainers`: `VeyrForgeAdmin`) then **Login with GitHub** at [glama.ai/mcp/servers/VeyrForge/codehelper](https://glama.ai/mcp/servers/VeyrForge/codehelper). After claim, click **Sync Server** and open the **score** tab to trigger quality evaluation. |
 | **PulseMCP** | Syncs from the official registry + GitHub; submit form if still open: https://www.pulsemcp.com/submit |
 | **mcp.so** | https://mcp.so/submit — GitHub URL `https://github.com/VeyrForge/codehelper`, type local/stdio |
 | **Smithery** | After `vf publish codehelper --tag vX.Y.Z`, the `post_publish` hook runs `scripts/publish-smithery.sh` (requires `smithery auth login` once). Manual: `smithery mcp publish ./file.mcpb -n veyrforge/codehelper` |
