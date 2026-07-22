@@ -66,6 +66,7 @@ docs/EXAMPLE_QUESTIONS.md
 docs/*
 !docs/MCP_TOOLS.md
 !docs/BENCHMARK.md
+!docs/MCP_REGISTRY.md
 !docs/public/
 !docs/public/**
 scripts/publish-public-mirrors.sh

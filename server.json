@@ -1,0 +1,54 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.VeyrForge/codehelper",
+  "title": "Codehelper",
+  "description": "Local-first code intelligence MCP: symbol graph, impact analysis, 60+ tools.",
+  "repository": {
+    "url": "https://github.com/VeyrForge/codehelper",
+    "source": "github"
+  },
+  "version": "3.0.1",
+  "websiteUrl": "https://github.com/VeyrForge/codehelper",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.1/codehelper_3.0.1_linux_amd64.mcpb",
+      "fileSha256": "0ab969e1e114f0b38928c128de9303380a6b0a1203ffedd429568f4b2e0638c5",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.1/codehelper_3.0.1_linux_arm64.mcpb",
+      "fileSha256": "79d3854a84315ae09f25d61fa72ee40461132496ee2976dd5a2c3fd9acd56de4",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.1/codehelper_3.0.1_darwin_amd64.mcpb",
+      "fileSha256": "e3f5ba96b37b197e70f0f8d59e94120b3f95823a532a65f9bf2bd0ccf3e2f3f4",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.1/codehelper_3.0.1_darwin_arm64.mcpb",
+      "fileSha256": "6e3c3c4a2a2ecf6578378e8882dcd16c3c25faf5a680893a9a3d9106a010e533",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.1/codehelper_3.0.1_windows_amd64.mcpb",
+      "fileSha256": "56d77a1a2be6d92e7431252dd812ce943cb43da9eacc84a783150fcea5755175",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
