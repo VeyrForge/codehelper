@@ -292,7 +292,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 
 	s.AddTool(mcp.NewTool("verify",
 		mcp.WithDescription("Run lint/build/test gates with argv-mode default (no shell), per-command timeout, optional allowlist. REQUIRED before finish_check: after a green run set finish_check verify_ran=true; if cmds are missing/ephemeral use verify_abstained=true + verify_reason — never invent a green gate."),
-		mcp.WithString("repo_root", mcp.Required()),
+		mcp.WithString("repo_root", mcp.Required(), mcp.Description("Absolute path to the repository root to run verify commands in")),
 		mcp.WithString("lint_cmd", mcp.Description("e.g. npm run lint")),
 		mcp.WithString("build_cmd", mcp.Description("e.g. go build ./...")),
 		mcp.WithString("test_cmd", mcp.Description("e.g. go test ./...")),
@@ -307,10 +307,10 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 		mcp.WithDescription("Strict review of actual code changes"),
 		mcp.WithString("base", mcp.Description("Diff base"), mcp.DefaultString("HEAD~1")),
 		mcp.WithString("severity_floor", mcp.Description("low|medium|high|critical"), mcp.DefaultString("medium")),
-		mcp.WithBoolean("include_tests", mcp.DefaultBool(true)),
-		mcp.WithBoolean("include_security", mcp.DefaultBool(true)),
-		mcp.WithBoolean("include_performance", mcp.DefaultBool(true)),
-		mcp.WithBoolean("include_contracts", mcp.DefaultBool(true)),
+		mcp.WithBoolean("include_tests", mcp.Description("Include test-gap and coverage hints in the review"), mcp.DefaultBool(true)),
+		mcp.WithBoolean("include_security", mcp.Description("Scan diff for security smells (secrets, injection, eval)"), mcp.DefaultBool(true)),
+		mcp.WithBoolean("include_performance", mcp.Description("Flag performance-sensitive changes in the diff"), mcp.DefaultBool(true)),
+		mcp.WithBoolean("include_contracts", mcp.Description("Check public API / contract breakage in changed symbols"), mcp.DefaultBool(true)),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("review_diff", reviewDiffHandler(regRef)))

@@ -18,9 +18,9 @@ func RegisterAgentSupportTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 	s.AddTool(mcp.NewTool("finish_check",
 		mcp.WithDescription("Hard done gate: verify hygiene + release readiness. Returns can_claim_done / completion_state. Claim done ONLY when can_claim_done=true. On shallow/ephemeral beds returns completion_state=abstain (structured, not error) — do not invent a green gate. Pass verify_ran=true after argv verify, or verify_abstained=true with verify_reason."),
-		mcp.WithString("base_ref", mcp.DefaultString("HEAD~1")),
-		mcp.WithBoolean("verify_ran", mcp.DefaultBool(false)),
-		mcp.WithBoolean("verify_abstained", mcp.DefaultBool(false)),
+		mcp.WithString("base_ref", mcp.Description("Git ref to diff against for release readiness (default HEAD~1)"), mcp.DefaultString("HEAD~1")),
+		mcp.WithBoolean("verify_ran", mcp.Description("Set true after a green argv verify run"), mcp.DefaultBool(false)),
+		mcp.WithBoolean("verify_abstained", mcp.Description("Set true when verify could not run (no cmds / ephemeral bed); pair with verify_reason"), mcp.DefaultBool(false)),
 		mcp.WithString("verify_reason", mcp.Description("required when abstained")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		annotReadOnlyClosedWorld(),

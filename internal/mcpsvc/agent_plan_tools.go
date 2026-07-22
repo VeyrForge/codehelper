@@ -33,7 +33,7 @@ func RegisterAgentPlanTools(s *server.MCPServer, reg *registry.Registry) {
 
 	s.AddTool(mcp.NewTool("agent_execute_todo",
 		mcp.WithDescription("Execute one approved/planned todo through the agent loop with optional verify gate"),
-		mcp.WithString("task_id", mcp.Required()),
+		mcp.WithString("task_id", mcp.Required(), mcp.Description("Task id from agent_plan (required)")),
 		mcp.WithString("todo_id", mcp.Description("Todo id; default is next executable")),
 		mcp.WithBoolean("verify", mcp.Description("Run post-write verification gate"), mcp.DefaultBool(true)),
 		mcp.WithNumber("max_tool_rounds", mcp.Description("Agent tool rounds cap")),
