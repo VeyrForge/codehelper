@@ -2,6 +2,7 @@
   "name": "codehelper-workspace",
   "version": "0.0.0",
   "private": true,
+  "license": "LicenseRef-VeyrForge-Source-Available",
   "description": "Root build orchestrator for the codehelper Go CLI + MCP. Works on Linux, macOS, and Windows. VS Code extension lives on the vscode-extension branch.",
   "engines": {
     "node": ">=18"

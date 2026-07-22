@@ -16,7 +16,7 @@ import (
 func RegisterExpandRequestTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 	s.AddTool(mcp.NewTool("expand_request",
-		mcp.WithDescription("Expand vague user request into inferred requirements using pattern packs"),
+		mcp.WithDescription("Expand a vague user request into inferred requirements, risks, and pattern-pack hints before planning. Use early in intake; output feeds `agent_plan` / `kickoff`. Does not edit code."),
 		mcp.WithString("request", mcp.Required()),
 		mcp.WithString("project_type", mcp.Description("optional override")),
 		mcp.WithString("changed_area", mcp.Description("frontend|backend|fullstack")),
@@ -25,7 +25,7 @@ func RegisterExpandRequestTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("expand_request", expandRequestHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("select_pattern",
-		mcp.WithDescription("Pick best-matching feature pattern for a natural-language request. Use argument request (not feature_type)."),
+		mcp.WithDescription("Pick the best-matching feature pattern for a natural-language request from project pattern packs. Use before `agent_plan` when the task type is unclear; pass `request` (not feature_type)."),
 		mcp.WithString("request", mcp.Required(), mcp.Description("Natural-language feature request")),
 		mcp.WithString("project_type", mcp.Description("optional")),
 		mcp.WithString("repo", mcp.Description("Repository name")),

@@ -80,7 +80,7 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("orchestration_rerun", orchestrationRerunHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestration_feedback",
-		mcp.WithDescription("Store correction for an orchestration run and update orchestration memory. Returns constraints for orchestration_rerun."),
+		mcp.WithDescription("Store user correction for an orchestration run and update orchestration memory (feedback rules, avoid lists). Returns constraints for `orchestration_rerun` — use when orchestrate picked the wrong workflow."),
 		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id to correct")),
 		mcp.WithString("message", mcp.Required(), mcp.Description("What was wrong or what to focus on")),
 		mcp.WithString("correction_type", mcp.Description("wrong_scope | wrong_symbol | missing_tests | other (default wrong_scope)")),
@@ -98,14 +98,14 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("run_trace", runTraceHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("explain_run",
-		mcp.WithDescription("Explain why an orchestration run chose its workflow and tool sequence, including any feedback applied."),
+		mcp.WithDescription("Explain why an orchestration run chose its workflow and tool sequence, including feedback applied from prior runs. Use after `orchestrate` when the compact trace is not enough context."),
 		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("explain_run", explainRunHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestration_memory",
-		mcp.WithDescription("Search orchestration memory (feedback rules, negative memory, workflow hints) learned from prior runs."),
+		mcp.WithDescription("Search orchestration memory: feedback rules, negative memory, and workflow hints learned from prior runs. Use before `orchestrate`/`orchestration_rerun` to reuse project-specific routing constraints."),
 		mcp.WithString("query", mcp.Description("Search query")),
 		mcp.WithNumber("limit", mcp.Description("Max results"), mcp.DefaultNumber(8)),
 		mcp.WithString("repo", mcp.Description("Repository name")),

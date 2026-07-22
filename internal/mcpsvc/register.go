@@ -304,7 +304,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("verify", verifyHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("review_diff",
-		mcp.WithDescription("Strict review of actual code changes"),
+		mcp.WithDescription("Line-level diff REVIEW (no LLM): hunks vs base_ref with severity floor, optional test-gap / security / performance / contract checks. Use AFTER edits and BEFORE finish_check; pair with `review` (symbol blast radius) and `diagnostics`."),
 		mcp.WithString("base", mcp.Description("Diff base"), mcp.DefaultString("HEAD~1")),
 		mcp.WithString("severity_floor", mcp.Description("low|medium|high|critical"), mcp.DefaultString("medium")),
 		mcp.WithBoolean("include_tests", mcp.Description("Include test-gap and coverage hints in the review"), mcp.DefaultBool(true)),

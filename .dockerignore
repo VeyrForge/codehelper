@@ -1,0 +1,14 @@
+.git
+.github
+.codehelper
+.testbeds
+bin
+dist
+node_modules
+*.mcpb
+*.tar.gz
+*.zip
+docs/private
+docs/public
+scripts/package-share.*
+third_party/**/.github

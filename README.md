@@ -8,7 +8,8 @@ Codehelper indexes git repositories on your machine, builds a symbol and call gr
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-server-purple)](https://modelcontextprotocol.io/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.VeyrForge%2Fcodehelper-0A7)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.VeyrForge/codehelper)
-[![Glama](https://glama.ai/mcp/servers/VeyrForge/codehelper/badges/score.svg)](https://glama.ai/mcp/servers/VeyrForge/codehelper)
+[![Glama score](https://glama.ai/mcp/servers/VeyrForge/codehelper/badges/score.svg)](https://glama.ai/mcp/servers/VeyrForge/codehelper)
+[![Glama](https://glama.ai/mcp/servers/VeyrForge/codehelper/badges/card.svg)](https://glama.ai/mcp/servers/VeyrForge/codehelper)
 [![License: Source-Available](https://img.shields.io/badge/license-Source--Available-orange)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](#supported-platforms)
 

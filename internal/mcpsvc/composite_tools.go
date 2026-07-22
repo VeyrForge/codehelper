@@ -40,7 +40,7 @@ func RegisterCompositeTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("edit_cycle", editCycleHandler(regRef, h)))
 
 	s.AddTool(mcp.NewTool("preflight",
-		mcp.WithDescription("Release gate bundle: detect_changes + review_diff + finish_check in one call — use before claiming done."),
+		mcp.WithDescription("Release gate bundle in one call: detect_changes + review_diff + finish_check. Use immediately before claiming done to avoid missing a gate step. Read-only except finish_check verify flags you pass in."),
 		mcp.WithString("base_ref", mcp.Description("Git ref for detect_changes (default HEAD~1)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("format", mcp.Description("toon (default) | json")),

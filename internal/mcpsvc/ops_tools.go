@@ -36,7 +36,7 @@ func RegisterOpsTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("remote_exec", remoteExecHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("log_read",
-		mcp.WithDescription("Tail a configured LOCAL log source (from connections add-log). Remote logs use remote_exec with a tail recipe."),
+		mcp.WithDescription("Tail a configured LOCAL log source (from `connections add-log`). For remote hosts use `remote_exec` with a tail recipe — never pass raw shell. Read-only; returns recent lines with optional level filter."),
 		mcp.WithString("source", mcp.Required(), mcp.Description("Log source name")),
 		mcp.WithNumber("lines", mcp.Description("Lines to tail (default 200, max 1000)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
@@ -55,7 +55,7 @@ func RegisterOpsTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("db_query", dbQueryHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("db_schema",
-		mcp.WithDescription("Schema introspection for a configured sqlite or mysql database. Optional comma-separated table filter."),
+		mcp.WithDescription("Read-only schema introspection for a configured sqlite or mysql profile (tables, columns, indexes). Optional comma-separated table filter. Requires `connections add-db`; no DDL/DML."),
 		mcp.WithString("connection", mcp.Required(), mcp.Description("Database profile name")),
 		mcp.WithString("tables", mcp.Description("Comma-separated table names (default: all, max 50)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),

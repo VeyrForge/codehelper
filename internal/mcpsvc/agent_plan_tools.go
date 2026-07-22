@@ -18,7 +18,7 @@ import (
 func RegisterAgentPlanTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 	s.AddTool(mcp.NewTool("agent_plan",
-		mcp.WithDescription("Create or refresh a persisted editable plan with todos from expand_request intake"),
+		mcp.WithDescription("Create or refresh a persisted, editable task plan with todos from `expand_request` intake. Writes `.codehelper/tasks/` when persist=true; next step is `agent_execute_todo` one todo at a time."),
 		mcp.WithString("request", mcp.Required(), mcp.Description("User feature/fix request")),
 		mcp.WithString("task_id", mcp.Description("Optional existing task to refresh plan in place")),
 		mcp.WithString("project_type", mcp.Description("optional override")),
@@ -32,7 +32,7 @@ func RegisterAgentPlanTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("agent_plan", agentPlanHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("agent_execute_todo",
-		mcp.WithDescription("Execute one approved/planned todo through the agent loop with optional verify gate"),
+		mcp.WithDescription("Execute ONE approved todo from `agent_plan` through the agent tool loop with optional argv verify gate. Pass task_id from agent_plan; default todo is next executable. Mutates workspace — not for read-only audits."),
 		mcp.WithString("task_id", mcp.Required(), mcp.Description("Task id from agent_plan (required)")),
 		mcp.WithString("todo_id", mcp.Description("Todo id; default is next executable")),
 		mcp.WithBoolean("verify", mcp.Description("Run post-write verification gate"), mcp.DefaultBool(true)),
