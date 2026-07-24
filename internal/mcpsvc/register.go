@@ -36,6 +36,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/VeyrForge/codehelper/internal/setup"
 	"github.com/VeyrForge/codehelper/internal/setupsuggest"
 	"github.com/VeyrForge/codehelper/internal/verify"
@@ -145,8 +146,8 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("query", queryHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("context",
-		mcp.WithDescription("Full report for ONE symbol: definition SOURCE, signature/doc, callers, callees, imports, AND blast_radius + risk. Use after query/scout INSTEAD of raw read_workspace_file or a separate impact call. Pass name or sym: id; when names collide (Nest samples, FastAPI docs_src), pass path= to pin the production (or intentional sample) definition."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("REQUIRED — symbol name or sym: id from query (NOT 'symbol'; aliases: symbol, sym, target)")),
+		mcp.WithDescription("Full report for ONE symbol: definition SOURCE, signature/doc, callers, callees, imports, AND blast_radius + risk. Use after query/scout INSTEAD of raw read_workspace_file or a separate impact call. Pass name=Symbol (aliases: symbol, sym, target). Example: context name=LoginHandler. Bare health/ready vibes → prefer change_kit. When names collide, pass path=."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("REQUIRED — symbol name or sym: id from query/scout. Aliases accepted: symbol, sym, target. Prefer name=; change_kit uses target= for the same idea.")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate when several symbols share the name")),
 		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
@@ -156,8 +157,8 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("context", contextHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("impact",
-		mcp.WithDescription("Blast radius over the call graph before change/delete/rename. Default direction=upstream (who uses this?). Pass direction=downstream for deps. Bare names prefer non-fixture defs; pass path= on sample collisions. Class/type hubs that are self-only on downstream auto-retry upstream. Sparse graphs: do not treat 0 callers as proof of isolation — check confidence / doctor warnings."),
-		mcp.WithString("target", mcp.Required(), mcp.Description("Symbol name or id")),
+		mcp.WithDescription("Blast radius over the call graph before change/delete/rename. PARAM: pass target= (same key as change_kit; NOT name= — that is for context). Default direction=upstream (who uses this?). Pass direction=downstream for deps. Bare names prefer non-fixture defs; pass path= on sample collisions. Sparse graphs: do not treat 0 callers as proof of isolation."),
+		mcp.WithString("target", mcp.Required(), mcp.Description("REQUIRED key is `target` — symbol name or sym: id (aliases: name, symbol, sym). Same key as change_kit; different from context's name=.")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate when several symbols share the name")),
 		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
 		mcp.WithString("direction", mcp.Description("upstream (default: who uses this) | downstream (what this depends on)"), mcp.DefaultString("upstream")),
@@ -247,8 +248,8 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("api_surface", apiSurfaceHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("change_kit",
-		mcp.WithDescription("Everything needed to change one symbol SAFELY, in a single call: its definition source, every call site (with the calling line), the tests that cover it, the risk tier, and a consistency checklist. Use right before editing a symbol — it replaces the read/grep round-trips you'd otherwise make and stops you from missing a caller. The edit-time companion to `scout`."),
-		mcp.WithString("target", mcp.Required(), mcp.Description("REQUIRED — symbol to change: name or sym: id from query (aliases: name, symbol, sym)")),
+		mcp.WithDescription("Everything needed to change one symbol SAFELY in one call: definition source, every call site (with calling line), covering tests, risk tier, checklist. Use right before editing. PARAM: pass target= (NOT name= — that is for context/context_bundle). Example: change_kit target=LoginHandler. If missing symbol, call query first then retry with the exact name or sym: id."),
+		mcp.WithString("target", mcp.Required(), mcp.Description("REQUIRED key is `target` — symbol to change: name or sym: id from query/scout. Wrong: passing only name= still works via alias, but prefer target=. Not context's name=.")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
 		annotReadOnlyClosedWorld(),
@@ -282,7 +283,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("trace", traceHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("diagnostics",
-		mcp.WithDescription("Compiler/static-check self-loop without an LSP: auto-detects the repo toolchain and runs its canonical checks (Go: go build + go vet; Rust: cargo check; TS: tsc --noEmit) in the sandboxed argv runner, then returns structured file:line:col problems. Use after editing to confirm the change compiles and vets clean before you claim it works — the fast feedback loop an LSP would give you. Pass `command` to run a custom check (e.g. \"npm run typecheck\")."),
+		mcp.WithDescription("Compiler/static-check self-loop without requiring an LSP daemon: auto-detects the repo toolchain and runs its strongest available checks (Go: go build + go vet; Rust: cargo check; TS: tsc --noEmit; Python: pyright→mypy→ruff→compileall; PHP: phpstan with or without neon, else php -l) in the sandboxed argv runner, then returns structured file:line:col problems. Use after editing to confirm the change compiles/types clean. Pass `command` for a custom check. For live hover/def/refs when language servers are installed, see the optional `lsp` tool."),
 		mcp.WithString("command", mcp.Description("Override the auto-detected check command (argv mode, no shell)")),
 		mcp.WithNumber("timeout_seconds", mcp.Description("Per-command timeout (default 120)"), mcp.DefaultNumber(0)),
 		mcp.WithString("repo", mcp.Description("Repository name")),
@@ -291,35 +292,38 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("diagnostics", diagnosticsHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("verify",
-		mcp.WithDescription("Run lint/build/test gates with argv-mode default (no shell), per-command timeout, optional allowlist. REQUIRED before finish_check: after a green run set finish_check verify_ran=true; if cmds are missing/ephemeral use verify_abstained=true + verify_reason — never invent a green gate."),
-		mcp.WithString("repo_root", mcp.Required(), mcp.Description("Absolute path to the repository root to run verify commands in")),
-		mcp.WithString("lint_cmd", mcp.Description("e.g. npm run lint")),
-		mcp.WithString("build_cmd", mcp.Description("e.g. go build ./...")),
-		mcp.WithString("test_cmd", mcp.Description("e.g. go test ./...")),
+		mcp.WithDescription("Run lint/build/test gates. Default exec_mode=argv: plain command STRING per field (preferred: \"go test ./...\") OR a JSON array of argv tokens ([\"go\",\"test\",\"./...\"]). No pipes/&&/; (those need exec_mode=shell, opt-in). Pass repo= (or cwd=repo_root) so cmds auto-fill from project config/profile when lint/build/test omitted. Empty cmds → abstain (not a tool failure) with what_next; pull SuggestedVerifyCommands from project_context. REQUIRED before finish_check: after a green run set verify_ran=true; if cmds missing/ephemeral use verify_abstained=true + verify_reason — never invent a green gate."),
+		mcp.WithString("repo_root", mcp.Description("Absolute path to the repository root (aliases: cwd, path, root). Optional when repo= resolves an indexed project.")),
+		mcp.WithString("repo", mcp.Description("Registered repository name — resolves repo_root and default verify cmds when omitted")),
+		mcp.WithString("lint_cmd", mcp.Description("argv string \"npm run lint\" OR JSON array [\"npm\",\"run\",\"lint\"] (no pipes; alias: lint). Prefer string on Windows MCP hosts.")),
+		mcp.WithString("build_cmd", mcp.Description("argv string \"go build ./...\" OR JSON array [\"go\",\"build\",\"./...\"] (no &&; alias: build)")),
+		mcp.WithString("test_cmd", mcp.Description("argv string \"go test ./...\" OR JSON array [\"go\",\"test\",\"./...\"] (no pipes; alias: test)")),
 		mcp.WithString("patch_unified", mcp.Description("Optional unified diff for heuristics")),
-		mcp.WithString("exec_mode", mcp.Description("argv (default, secure, no shell) | shell (opt-in)"), mcp.DefaultString("argv")),
+		mcp.WithString("exec_mode", mcp.Description("argv (default: secure, no shell, no pipes/&&) | shell (opt-in when you truly need pipes/&&)"), mcp.DefaultString("argv")),
 		mcp.WithNumber("timeout_seconds", mcp.Description("Per-command timeout cap (default 300)"), mcp.DefaultNumber(300)),
 		mcp.WithString("allowed_commands", mcp.Description("Comma-separated allowlist of executable basenames in argv mode (e.g. \"go,npm,make\")")),
+		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
 		annotVerify(),
 	), timedTool("verify", verifyHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("review_diff",
-		mcp.WithDescription("Line-level diff REVIEW (no LLM): hunks vs base_ref with severity floor, optional test-gap / security / performance / contract checks. Use AFTER edits and BEFORE finish_check; pair with `review` (symbol blast radius) and `diagnostics`."),
-		mcp.WithString("base", mcp.Description("Diff base"), mcp.DefaultString("HEAD~1")),
-		mcp.WithString("severity_floor", mcp.Description("low|medium|high|critical"), mcp.DefaultString("medium")),
+		mcp.WithDescription("Line-level diff REVIEW (no LLM): hunks vs base_ref with severity floor, optional test-gap / security / performance / contract checks. Path-name heuristics (api/handler/auth) are demoted to medium/low and labeled path-heuristic — not finish_check blockers; suppressed when >12 files change (dirty trees). Prefer base=HEAD after local edits. Use AFTER edits and BEFORE finish_check; pair with `review` (symbol blast radius) and `diagnostics`. Returns what_next + recommended_next_tools."),
+		mcp.WithString("base", mcp.Description("Diff base (default HEAD~1; use HEAD for workdir-only after local edits)"), mcp.DefaultString("HEAD~1")),
+		mcp.WithString("severity_floor", mcp.Description("low|medium|high|critical — default medium filters path-heuristic noise"), mcp.DefaultString("medium")),
 		mcp.WithBoolean("include_tests", mcp.Description("Include test-gap and coverage hints in the review"), mcp.DefaultBool(true)),
 		mcp.WithBoolean("include_security", mcp.Description("Scan diff for security smells (secrets, injection, eval)"), mcp.DefaultBool(true)),
 		mcp.WithBoolean("include_performance", mcp.Description("Flag performance-sensitive changes in the diff"), mcp.DefaultBool(true)),
 		mcp.WithBoolean("include_contracts", mcp.Description("Check public API / contract breakage in changed symbols"), mcp.DefaultBool(true)),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("review_diff", reviewDiffHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("docs",
-		mcp.WithDescription("Up-to-date official documentation for a library/framework/API (codehelper's local-first answer to Context7). Resolves the version this project pins from its manifests, then fetches version-correct docs preferring the llms.txt/llms-full.txt standard before HTML. `library` may also be a direct https URL (docs page, API reference, or OpenAPI page) to fetch it as-is. Unknown libraries resolve via npm/PyPI/crates metadata; if one is still missing, register it with docs_add. Network fetch is privacy-gated."),
-		mcp.WithString("library", mcp.Required(), mcp.Description("Library/framework name (next, react, laravel, cobra, django) OR a direct https docs/API URL")),
+		mcp.WithDescription("Up-to-date official documentation for a library/framework/API (codehelper's local-first answer to Context7). Resolves the version this project pins from lockfiles (package-lock/yarn/pnpm/go.sum/Cargo.lock/composer.lock/poetry/Pipfile) then manifests, then fetches version-correct docs preferring the llms.txt/llms-full.txt standard before HTML. `library` may also be a direct https URL (docs page, API reference, OpenAPI, or @types via DefinitelyTyped). Unknown libraries resolve via npm/PyPI/crates metadata; if one is still missing, register it with docs_add. Network fetch is privacy-gated."),
+		mcp.WithString("library", mcp.Required(), mcp.Description("Library/framework name (next, react, laravel, cobra, django, @types/node) OR a direct https docs/API/OpenAPI URL (aliases: package, pkg, name)")),
 		mcp.WithString("topic", mcp.Description("Optional focus, e.g. 'app router', 'middleware', 'migrations'")),
-		mcp.WithString("version", mcp.Description("Override version (default: detected from this project's manifest)")),
+		mcp.WithString("version", mcp.Description("Override version (default: lockfile-exact pin, else manifest constraint)")),
 		mcp.WithNumber("max_tokens", mcp.Description("Approx token budget for returned docs (default 5000)"), mcp.DefaultNumber(5000)),
 		mcp.WithBoolean("approve_network", mcp.Description("Allow network fetch for this call even if research is disabled in learning.json"), mcp.DefaultBool(false)),
 		mcp.WithBoolean("no_cache", mcp.Description("Bypass the on-disk docs cache"), mcp.DefaultBool(false)),
@@ -447,6 +451,7 @@ func RegisterAll(s *server.MCPServer, reg *registry.Registry) {
 
 	// Main / high-frequency tools register first so they sort to the top of tools/list.
 	RegisterKickoffTools(s, regRef)
+	RegisterLSPTools(s, regRef)
 	RegisterScopeTools(s, regRef)
 	RegisterPlanTools(s, regRef)
 	RegisterReviewTools(s, regRef)
@@ -716,7 +721,14 @@ func projectContextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			Confidence:              0.95,
 		}
 		if fresh.Stale && fresh.StaleReason != "" {
-			out.Warnings = append(out.Warnings, "index stale: "+fresh.StaleReason)
+			warn := "index stale: " + fresh.StaleReason
+			if fix := strings.TrimSpace(fresh.SuggestedFix); fix != "" {
+				warn += " — " + fix
+			}
+			out.Warnings = append(out.Warnings, warn)
+		} else if fresh.IndexLag == "possible" {
+			out.Warnings = append(out.Warnings,
+				"index_lag=possible (just-edited symbols may miss) — use disk_matches / read_workspace_file or run codehelper analyze --force")
 		}
 		if idx == "missing" || !initOK {
 			out.Warnings = append(out.Warnings, "project is not initialized; run `codehelper init` in the project root")
@@ -883,16 +895,116 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		// invalidates it; freshness above is recomputed every call regardless.
 		cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%s\x00%d", repo.Name, q, intent, hitLimit, fresh.IndexedCommit, fresh.IndexedAt.Unix())
 		hits, cached := globalQueryHitsCache.get(cacheKey)
+		queryPackNote := ""
 		if !cached {
 			diffSet, _ := detect.ChangedSymbolSet(ctx, repo.RootPath, repo.Name, baseRef, st)
 			retrieval.EnsureEmbedder()
-			h, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, q, hitLimit, retrieval.MCPQueryOptionsWithProfile(
-				repo.RootPath, intent, strings.Fields(strings.ToLower(q)), diffSet,
-			))
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
+			searchQ := q
+			// Vague junior security/perf prompts → expand to sink/hotspot query pack
+			// so lexical ranking lands on file:line candidates instead of CSS/DI noise.
+			if isVagueSecurityQuery(q) {
+				pack := securityQueryPack()
+				searchQ = pack[0]
+				queryPackNote = "Vague security prompt expanded via security query pack (SQL/XSS/CSRF/secrets/eval sinks). "
+				var merged []retrieval.RankedSymbol
+				seen := map[string]struct{}{}
+				for _, pq := range pack {
+					h, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, pq, hitLimit/2+2, retrieval.MCPQueryOptionsWithProfile(
+						repo.RootPath, intent, strings.Fields(strings.ToLower(pq)), diffSet,
+					))
+					if err != nil {
+						continue
+					}
+					for _, hit := range h {
+						id := hit.Symbol.ID
+						if id == "" {
+							id = hit.Symbol.Path + ":" + hit.Symbol.Name
+						}
+						if _, ok := seen[id]; ok {
+							continue
+						}
+						seen[id] = struct{}{}
+						merged = append(merged, hit)
+					}
+					if len(merged) >= hitLimit {
+						break
+					}
+				}
+				hits = merged
+			} else if isVaguePerfQuery(q) {
+				pack := perfQueryPack()
+				shape := security.DetectProjectShape(repo.RootPath)
+				if shape == security.ShapeLibrary || shape == security.ShapeFrameworkCore {
+					pack = perfQueryPackLibrary()
+					queryPackNote = "Vague performance prompt on library/framework_core — expanded via library perf pack (hot path/alloc/complexity, not app N+1). "
+				} else {
+					queryPackNote = "Vague performance prompt expanded via perf query pack (N+1/prefetch/unbounded/hot path). "
+				}
+				searchQ = pack[0]
+				var merged []retrieval.RankedSymbol
+				seen := map[string]struct{}{}
+				for _, pq := range pack {
+					h, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, pq, hitLimit/2+2, retrieval.MCPQueryOptionsWithProfile(
+						repo.RootPath, intent, strings.Fields(strings.ToLower(pq)), diffSet,
+					))
+					if err != nil {
+						continue
+					}
+					for _, hit := range h {
+						id := hit.Symbol.ID
+						if id == "" {
+							id = hit.Symbol.Path + ":" + hit.Symbol.Name
+						}
+						if _, ok := seen[id]; ok {
+							continue
+						}
+						seen[id] = struct{}{}
+						merged = append(merged, hit)
+					}
+					if len(merged) >= hitLimit {
+						break
+					}
+				}
+				hits = merged
+			} else if isEndpointFeatureTask(q) {
+				pack := healthQueryPack()
+				searchQ = pack[0]
+				queryPackNote = "Health/ready endpoint prompt expanded via health query pack (GET /health|/readyz|/livez + controllers). "
+				var merged []retrieval.RankedSymbol
+				seen := map[string]struct{}{}
+				for _, pq := range pack {
+					h, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, pq, hitLimit/2+2, retrieval.MCPQueryOptionsWithProfile(
+						repo.RootPath, intent, strings.Fields(strings.ToLower(pq)), diffSet,
+					))
+					if err != nil {
+						continue
+					}
+					for _, hit := range h {
+						id := hit.Symbol.ID
+						if id == "" {
+							id = hit.Symbol.Path + ":" + hit.Symbol.Name
+						}
+						if _, ok := seen[id]; ok {
+							continue
+						}
+						seen[id] = struct{}{}
+						merged = append(merged, hit)
+					}
+					if len(merged) >= hitLimit {
+						break
+					}
+				}
+				hits = preferFeatureHits(merged, q)
+			} else {
+				h, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, q, hitLimit, retrieval.MCPQueryOptionsWithProfile(
+					repo.RootPath, intent, strings.Fields(strings.ToLower(q)), diffSet,
+				))
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				hits = h
 			}
-			hits = h
+			_ = searchQ
 			globalQueryHitsCache.put(cacheKey, hits)
 		}
 		// The OPT-IN multilingual/semantic rerank already ran inside
@@ -906,6 +1018,19 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 		var demoted int
 		hits, demoted = demoteFixtureHits(hits)
+		if isVagueSecurityQuery(q) || isVaguePerfQuery(q) || hasSecurityIntent(q) || hasPerfIntent(q) {
+			role := inferRoleFromTask("", q)
+			hits = filterAuditHits(hits, role)
+		}
+		if hasSecurityIntent(q) || isVagueSecurityQuery(q) {
+			hits = demoteSecurityLexicalNoise(hits)
+			hits = demoteIntentMismatchedHits(q, hits)
+		} else if strings.Contains(strings.ToLower(q), "sql") || strings.Contains(strings.ToLower(q), "injection") {
+			hits = demoteIntentMismatchedHits(q, hits)
+		}
+		if isEndpointFeatureTask(q) {
+			hits = preferFeatureHits(hits, q)
+		}
 		// Surface only the top_k hits (default 10), compact by default. Retrieval
 		// kept a larger candidate pool above for context-pack ranking, but dumping
 		// all of it wastes tokens and dilutes the agent's focus (context rot).
@@ -916,6 +1041,9 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		detailed := strings.EqualFold(argString(args, "verbosity"), "detailed")
 		surfaced, truncated := capHits(hits, topK)
 		retrievalNote := stdRetrievalNote
+		if queryPackNote != "" {
+			retrievalNote = queryPackNote + retrievalNote
+		}
 		if note := fixtureCollisionNote(demoted); note != "" {
 			retrievalNote = note + " " + retrievalNote
 		}
@@ -981,7 +1109,11 @@ func queryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			}
 		}
 		if fresh.Stale {
-			out.Warning = "index may be stale: " + fresh.StaleReason
+			warn := "index may be stale: " + fresh.StaleReason
+			if fix := strings.TrimSpace(fresh.SuggestedFix); fix != "" {
+				warn += " — " + fix
+			}
+			out.Warning = warn
 		}
 		enrichQueryToolResponse(&out, surfaced)
 		if includePack && out.ContextPack != nil && len(out.ContextPack.ContextPack) > 0 {
@@ -1019,6 +1151,9 @@ type blastRadius struct {
 	RiskTier   string   `json:"risk_tier"`
 	Dependents int      `json:"dependents"`
 	Top        []string `json:"top,omitempty"`
+	// Confidence is callGraphConfidence when the graph is sparse (PHP/Ruby/C…).
+	// Empty means density is fine — omit to keep payloads lean.
+	Confidence string `json:"confidence,omitempty"`
 }
 
 type compactContext struct {
@@ -1248,8 +1383,20 @@ func contextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		name := argFirst(args, "name", "symbol", "sym", "target")
+		aliasNote := argAliasCorrection(args, "name", "symbol", "sym", "target")
 		if name == "" {
-			return mcp.NewToolResultError("name is required — pass `name` (not `symbol`) with a symbol name or sym: id from query/scout"), nil
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message: "name is required — wrong/missing arg. Expected: {\"name\":\"SymbolName\"} (or sym: id from query/scout). " +
+					"Do NOT pass change_kit's `target` alone under the wrong tool; if you meant to edit, call change_kit with target=…. " +
+					"Aliases accepted: symbol, sym, target — but canonical key is name=.",
+				Expected: "{\"name\":\"SymbolName\"}",
+				Example:  map[string]any{"name": "LoginHandler"},
+				WhatNext: "Retry context with name=<Symbol> (aliases symbol/sym/target also work)",
+				RecommendedNextTools: []string{"query", "context", "change_kit"},
+			}), nil
 		}
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
@@ -1262,29 +1409,26 @@ func contextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		defer st.Close()
 		wantPath := strings.TrimSpace(argString(args, "path"))
 		wantLine := int(argFloat(args, "line", 0))
+		format := resolveFormat(args)
+		if isBareHealthishTarget(name) {
+			return symbolMissGuidance(ctx, st, repo.RootPath, repo.Name, "context", name, format), nil
+		}
 		sym, cands, err := resolveSymbolByName(ctx, st, repo.Name, name, wantPath, wantLine)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
-				if dm := retrieval.DiskGrepIdentifier(repo.RootPath, name, 5); len(dm) > 0 {
-					return mustToolResultFormatted(map[string]any{
-						"found":        false,
-						"name":         name,
-						"disk_matches": dm,
-						"freshness":    freshness.Inspect(repo.RootPath),
-						"note":         fmt.Sprintf("%q is not in the symbol index but EXISTS on disk (likely a new/uncommitted file the index hasn't caught up with). Open it with `read_workspace_file path=%s`, or run `codehelper analyze` to index it. Disk matches are listed in disk_matches (definitions first).", name, dm[0].Path),
-					}, resolveFormat(args))
-				}
-				return mcp.NewToolResultError(fmt.Sprintf("no indexed symbol named %q (and no on-disk match found). Next: call `query` with %q to find the correct name/sym: id, or `ast_query` for a structural match. If you expect it to exist, the index may be stale — run `codehelper analyze`.", name, name)), nil
+			if isSymbolNotFound(err) || strings.Contains(err.Error(), "not found") {
+				return symbolMissGuidance(ctx, st, repo.RootPath, repo.Name, "context", name, format), nil
 			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		if sym == nil {
-			return mustToolResultFormatted(map[string]any{
-				"ambiguous":  true,
-				"name":       name,
-				"candidates": cands,
-				"note":       "multiple symbols share this name — pass path= (and optional line=) or use the sym: id from query hits",
-			}, resolveFormat(args))
+			return mustToolResultFormatted(withRecoveryFields(map[string]any{
+				"ambiguous":              true,
+				"name":                   name,
+				"candidates":             cands,
+				"note":                   "multiple symbols share this name — pass path= (and optional line=) or use the sym: id from query hits",
+				"recommended_next_tools": []string{"query", "context", "change_kit"},
+				"what_next":              "Retry context with path= or a sym: id from the candidates list",
+			}, ErrCategoryAmbiguous, RecoveryDisambiguate, true), format)
 		}
 		detailed := strings.EqualFold(argString(args, "verbosity"), "detailed")
 		// Compact view shows at most maxList callers; cap the load a bit above that
@@ -1304,30 +1448,84 @@ func contextHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			"bundle":    contextView(bun, detailed, repo.RootPath, bodyMode),
 			"freshness": fresh,
 		}
+		primaryLang := ""
+		if pr, perr := profile.ReadOrGenerate(repo.RootPath); perr == nil && pr != nil {
+			primaryLang = pr.PrimaryLanguage
+		}
+		graphConf := callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
 		// Fold in the blast radius so `context` also answers "what does changing this
-		// affect?" — no separate `impact` call for the common case.
+		// affect?" — no separate `impact` call for the common case. On sparse graphs,
+		// ALWAYS attach blast_radius (even self-only) so empty BR is never implied safe.
 		if bun != nil && bun.Symbol != nil {
-			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, bun.Symbol.ID, 3, "upstream"); aerr == nil && res != nil && len(res.Nodes) > 1 {
-				br := blastRadius{RiskTier: res.RiskTier, Dependents: len(res.Nodes) - 1}
-				for _, n := range res.Nodes {
-					if n.Depth == 0 || len(br.Top) >= 6 {
-						continue
-					}
-					br.Top = append(br.Top, fmt.Sprintf("%s %s", n.Name, locOf(n.Path, n.SymbolID)))
+			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, bun.Symbol.ID, 3, "upstream"); aerr == nil && res != nil {
+				deps := len(res.Nodes) - 1
+				if deps < 0 {
+					deps = 0
 				}
-				out["blast_radius"] = br
+				if len(res.Nodes) > 1 || graphConf != "" || (isDynamicSparseLanguage(primaryLang) && deps == 0) {
+					br := blastRadius{RiskTier: res.RiskTier, Dependents: deps, Confidence: graphConf}
+					for _, n := range res.Nodes {
+						if n.Depth == 0 || len(br.Top) >= 6 {
+							continue
+						}
+						br.Top = append(br.Top, fmt.Sprintf("%s %s", n.Name, locOf(n.Path, n.SymbolID)))
+					}
+					if graphConf != "" && deps == 0 {
+						br.RiskTier = "unknown"
+					}
+					out["blast_radius"] = br
+				}
 			}
 		}
 		if fresh.Stale {
-			out["warning"] = "index may be stale: " + fresh.StaleReason
+			warn := "index may be stale: " + fresh.StaleReason
+			if fix := strings.TrimSpace(fresh.SuggestedFix); fix != "" {
+				warn += " — " + fix
+			}
+			out["warning"] = warn
+			out["recovery_hint"] = RecoveryRefreshIndex
+			out["error_category"] = ErrCategoryStaleIndex
+			out["is_retryable"] = true
+			out["suggested_fix"] = "codehelper analyze --force"
+		}
+		if note := workspaceMismatchNote(ctx, reg, repo, argString(args, "repo")); note != "" {
+			out["workspace_warning"] = note
+			if out["recovery_hint"] == nil {
+				out["recovery_hint"] = RecoveryCheckWorkspace
+			}
 		}
 		// Empty caller/callee/import edges are common when the indexer hasn't
 		// resolved cross-file references yet. Tell the agent so it doesn't
 		// silently think the symbol is leaf-like.
-		if bun != nil && len(bun.Callers) == 0 && len(bun.Callees) == 0 && len(bun.Imports) == 0 {
+		emptyEdges := bun != nil && len(bun.Callers) == 0 && len(bun.Callees) == 0 && len(bun.Imports) == 0
+		if graphConf == "" && isDynamicSparseLanguage(primaryLang) && emptyEdges {
+			graphConf = fmt.Sprintf(
+				"LOW — empty edges on primary_language=%q; dynamic dispatch/facades often invisible. DIRECTIVE: do NOT treat as leaf-safe — confirm with tests + textual search.",
+				primaryLang,
+			)
+		}
+		if graphConf != "" {
+			out["call_graph_confidence"] = graphConf
+			out["confidence"] = 0.45
+			if emptyEdges {
+				out["note"] = "SPARSE/empty edges — do NOT treat as leaf-safe. " + graphConf
+			} else {
+				out["note"] = "SPARSE CALL GRAPH — callers may be under-counted. " + graphConf
+			}
+		} else if emptyEdges {
 			out["note"] = "no graph edges resolved for this symbol — either it is truly leaf-like, or the index lacks call-graph edges (run `codehelper analyze --force`). Use `impact` (direction=upstream/downstream) to traverse cross-file dependencies."
 		}
-		return mustToolResultFormatted(out, resolveFormat(args))
+		out["recommended_next_tools"] = []string{"change_kit", "impact", "diagnostics", "test_impact"}
+		out["what_next"] = fmt.Sprintf("change_kit target=%s — then apply_patch_workspace_file dry_run=true → diagnostics → review_diff → verify", name)
+		if aliasNote != "" {
+			if existing, _ := out["note"].(string); existing != "" {
+				out["note"] = aliasNote + " | " + existing
+			} else {
+				out["note"] = aliasNote
+			}
+			out["param_correction"] = aliasNote
+		}
+		return mustToolResultFormatted(out, format)
 	}
 }
 
@@ -1335,6 +1533,20 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
 		target := argFirst(args, "target", "name", "symbol", "sym")
+		if target == "" {
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message: "target is required — wrong/missing arg. Expected: {\"target\":\"SymbolName\"} (or sym: id). " +
+					"Canonical key is target= (same as change_kit). context uses name= instead — do not confuse them. " +
+					"Aliases accepted: name, symbol, sym.",
+				Expected: "{\"target\":\"SymbolName\"}",
+				Example:  map[string]any{"target": "LoginHandler"},
+				WhatNext: "Retry impact with target=<Symbol> (context uses name= — different key)",
+				RecommendedNextTools: []string{"query", "impact", "change_kit"},
+			}), nil
+		}
 		dirExplicit := strings.TrimSpace(argString(args, "direction")) != ""
 		dir := argString(args, "direction")
 		if dir == "" {
@@ -1359,17 +1571,26 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		defer st.Close()
 		wantPath := strings.TrimSpace(argString(args, "path"))
 		wantLine := int(argFloat(args, "line", 0))
+		format := resolveFormat(args)
+		if isBareHealthishTarget(target) {
+			return symbolMissGuidance(ctx, st, repo.RootPath, repo.Name, "impact", target, format), nil
+		}
 		sym, cands, err := resolveSymbolByName(ctx, st, repo.Name, target, wantPath, wantLine)
 		if err != nil {
+			if isSymbolNotFound(err) || strings.Contains(err.Error(), "not found") {
+				return symbolMissGuidance(ctx, st, repo.RootPath, repo.Name, "impact", target, format), nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		if sym == nil {
-			return mustToolResultFormatted(map[string]any{
-				"ambiguous":  true,
-				"target":     target,
-				"candidates": cands,
-				"note":       "multiple symbols share this name — pass path= or a sym: id from query",
-			}, resolveFormat(args))
+			return mustToolResultFormatted(withRecoveryFields(map[string]any{
+				"ambiguous":              true,
+				"target":                 target,
+				"candidates":             cands,
+				"note":                   "multiple symbols share this name — pass path= or a sym: id from query",
+				"recommended_next_tools": []string{"query", "context", "change_kit"},
+				"what_next":              "Retry impact with path= or a sym: id from the candidates list",
+			}, ErrCategoryAmbiguous, RecoveryDisambiguate, true), format)
 		}
 		res, err := mcpimpact.Analyze(ctx, st, repo.Name, sym.ID, depth, dir)
 		if err != nil {
@@ -1401,7 +1622,11 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			Freshness: fresh,
 		}
 		if fresh.Stale {
-			structured.Warning = "index may be stale: " + fresh.StaleReason
+			warn := "index may be stale: " + fresh.StaleReason
+			if fix := strings.TrimSpace(fresh.SuggestedFix); fix != "" {
+				warn += " — " + fix
+			}
+			structured.Warning = warn
 		}
 		if autoRetried {
 			if dirExplicit {
@@ -1415,7 +1640,35 @@ func impactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 				structured.Note += "; class/type hubs are often self-only while methods carry the edges — try impact on a method, or the opposite direction"
 			}
 		}
+		structured.CallGraphConfidence = callGraphConfidence(ctx, st, repo.Name)
+		primaryLang := ""
+		if pr, perr := profile.ReadOrGenerate(repo.RootPath); perr == nil && pr != nil {
+			primaryLang = pr.PrimaryLanguage
+			structured.CallGraphConfidence = callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
+		}
+		// Self-only impact on dynamic stacks is NOT evidence of isolation — even when
+		// repo-wide density clears the sparse floor (facades/macros still hide callers).
+		if structured.CallGraphConfidence == "" && isDynamicSparseLanguage(primaryLang) &&
+			res != nil && len(res.Nodes) <= 1 {
+			structured.CallGraphConfidence = fmt.Sprintf(
+				"LOW — self-only blast_radius on primary_language=%q; dynamic dispatch/facades/macros often invisible. DIRECTIVE: do NOT treat risk_tier=low / 0 dependents as isolation proof — confirm with tests + textual search.",
+				primaryLang,
+			)
+		}
 		enrichImpactResponse(&structured, res)
+		if fresh.Stale {
+			retry := true
+			structured.RecoveryHint = RecoveryRefreshIndex
+			structured.ErrorCategory = ErrCategoryStaleIndex
+			structured.IsRetryable = &retry
+			structured.SuggestedFix = "codehelper analyze --force"
+		}
+		if note := workspaceMismatchNote(ctx, reg, repo, argString(args, "repo")); note != "" {
+			structured.WorkspaceWarning = note
+			if structured.RecoveryHint == "" {
+				structured.RecoveryHint = RecoveryCheckWorkspace
+			}
+		}
 		return mustToolResultFormatted(structured, resolveFormat(args))
 	}
 }
@@ -1552,6 +1805,7 @@ func likelyPublicSymbol(sym types.Symbol) bool {
 func verifyHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		format := resolveFormat(args)
 		mode := verify.ExecMode(strings.ToLower(strings.TrimSpace(argString(args, "exec_mode"))))
 		if mode == "" {
 			mode = verify.ExecArgv
@@ -1566,16 +1820,77 @@ func verifyHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			}
 		}
 		timeoutSec := int(mcp.ParseInt64(req, "timeout_seconds", 0))
-		repoRoot := strings.TrimSpace(argString(args, "repo_root"))
-		if repoRoot == "" {
-			if repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo")); err == nil {
+		repoRoot := firstNonEmpty(
+			argString(args, "repo_root"),
+			argString(args, "cwd"),
+			argString(args, "path"),
+			argString(args, "root"),
+		)
+		var resolvedRepo registry.Entry
+		var haveRepo bool
+		if repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo")); err == nil {
+			resolvedRepo = repo
+			haveRepo = true
+			if repoRoot == "" {
 				repoRoot = repo.RootPath
 			}
 		}
-		lintCmd := argString(args, "lint_cmd")
-		buildCmd := argString(args, "build_cmd")
-		testCmd := argString(args, "test_cmd")
-		if repoRoot != "" && lintCmd == "" && buildCmd == "" && testCmd == "" {
+		if repoRoot == "" {
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       "repo_root or repo is required for verify",
+				Expected:      "{\"repo\":\"my-project\"} or {\"repo_root\":\"/abs/path\",\"test_cmd\":\"go test ./...\"}",
+				Example: map[string]any{
+					"repo":     "my-project",
+					"test_cmd": "go test ./...",
+				},
+				WhatNext:             "Retry verify with repo=<indexed name> (preferred) or absolute repo_root= + lint_cmd/build_cmd/test_cmd",
+				RecommendedNextTools: []string{"project_context", "verify", "finish_check"},
+			}), nil
+		}
+		lintCmd, lintNote, lerr := argCommandLine(args, "lint_cmd", "lint")
+		if lerr != nil {
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       lerr.Error(),
+				Expected:      "{\"lint_cmd\":\"go vet ./...\"} or {\"lint_cmd\":[\"go\",\"vet\",\"./...\"]}",
+				Example:       map[string]any{"repo": "my-project", "lint_cmd": "go vet ./..."},
+				WhatNext:      "Retry verify with plain argv strings (preferred) or a real JSON array of tokens — not a Sprint'd [cmd …] blob",
+				RecommendedNextTools: []string{"verify", "project_context", "finish_check"},
+			}), nil
+		}
+		buildCmd, buildNote, berr := argCommandLine(args, "build_cmd", "build")
+		if berr != nil {
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       berr.Error(),
+				Expected:      "{\"build_cmd\":\"go build ./...\"} or {\"build_cmd\":[\"go\",\"build\",\"./...\"]}",
+				Example:       map[string]any{"repo": "my-project", "build_cmd": "go build ./..."},
+				WhatNext:      "Retry verify with plain argv strings or a real JSON array of tokens",
+				RecommendedNextTools: []string{"verify", "project_context", "finish_check"},
+			}), nil
+		}
+		testCmd, testNote, terr := argCommandLine(args, "test_cmd", "test")
+		if terr != nil {
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       terr.Error(),
+				Expected:      "{\"test_cmd\":\"go test ./...\"} or {\"test_cmd\":[\"go\",\"test\",\"./...\"]}",
+				Example:       map[string]any{"repo": "my-project", "test_cmd": "go test ./..."},
+				WhatNext:      "Retry verify with plain argv strings or a real JSON array of tokens",
+				RecommendedNextTools: []string{"verify", "project_context", "finish_check"},
+			}), nil
+		}
+		argvRecoverNote := strings.TrimSpace(strings.Join([]string{lintNote, buildNote, testNote}, " "))
+		if lintCmd == "" && buildCmd == "" && testCmd == "" {
 			cfg, _ := projcfg.Load(repoRoot)
 			lintCmd = cfg.VerifyLint
 			buildCmd = cfg.VerifyBuild
@@ -1590,13 +1905,36 @@ func verifyHandler(reg *registry.Registry) server.ToolHandlerFunc {
 					}
 				}
 			}
+			// Toolchain fallback when profile/config empty (same as diagnostics).
+			if lintCmd == "" && buildCmd == "" && testCmd == "" {
+				ws := resolveVerifyWorkspace(repoRoot)
+				for _, c := range ws.Cmds {
+					c = strings.TrimSpace(c)
+					if c == "" {
+						continue
+					}
+					lower := strings.ToLower(c)
+					switch {
+					case strings.Contains(lower, "test"):
+						if testCmd == "" {
+							testCmd = c
+						}
+					case strings.Contains(lower, "vet") || strings.Contains(lower, "lint") || strings.Contains(lower, "check"):
+						if lintCmd == "" {
+							lintCmd = c
+						}
+					default:
+						if buildCmd == "" {
+							buildCmd = c
+						}
+					}
+				}
+			}
 		}
 		cwd := repoRoot
-		if repoRoot != "" {
-			ws := resolveVerifyWorkspace(repoRoot)
-			if ws.Cwd != "" {
-				cwd = ws.Cwd
-			}
+		ws := resolveVerifyWorkspace(repoRoot)
+		if ws.Cwd != "" {
+			cwd = ws.Cwd
 		}
 		vr := verify.Request{
 			RepoRoot:        cwd,
@@ -1613,14 +1951,88 @@ func verifyHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		b, _ := verify.ResultJSON(res)
-		return mcp.NewToolResultText(string(b)), nil
+		out := verifyToolResponse{
+			Accepted:    res.Accepted,
+			Confidence:  res.Confidence,
+			Reasons:     res.Reasons,
+			LintOutput:  truncTail(res.LintOutput, 4000),
+			BuildOutput: truncTail(res.BuildOutput, 4000),
+			TestOutput:  truncTail(res.TestOutput, 4000),
+			Abstain:     res.Abstain,
+			Stats:       res.Stats,
+			ExecMode:    res.ExecMode,
+			RepoRoot:    cwd,
+			LintCmd:     lintCmd,
+			BuildCmd:    buildCmd,
+			TestCmd:     testCmd,
+		}
+		if haveRepo {
+			out.Repo = resolvedRepo.Name
+		}
+		annotateVerifyWhatNext(&out)
+		if argvRecoverNote != "" {
+			if out.Note == "" {
+				out.Note = argvRecoverNote
+			} else {
+				out.Note = argvRecoverNote + " | " + out.Note
+			}
+		}
+		return mustToolResultFormatted(out, format)
 	}
+}
+
+type verifyToolResponse struct {
+	Accepted             bool              `json:"accepted"`
+	Confidence           float64           `json:"confidence"`
+	Reasons              []string          `json:"reasons"`
+	LintOutput           string            `json:"lint_output,omitempty"`
+	BuildOutput          string            `json:"build_output,omitempty"`
+	TestOutput           string            `json:"test_output,omitempty"`
+	Abstain              bool              `json:"abstain,omitempty"`
+	Stats                []verify.ExecStat `json:"stats,omitempty"`
+	ExecMode             string            `json:"exec_mode,omitempty"`
+	Repo                 string            `json:"repo,omitempty"`
+	RepoRoot             string            `json:"repo_root,omitempty"`
+	LintCmd              string            `json:"lint_cmd,omitempty"`
+	BuildCmd             string            `json:"build_cmd,omitempty"`
+	TestCmd              string            `json:"test_cmd,omitempty"`
+	Note                 string            `json:"note,omitempty"`
+	WhatNext             string            `json:"what_next,omitempty"`
+	RecommendedNextTools []string          `json:"recommended_next_tools,omitempty"`
+}
+
+func annotateVerifyWhatNext(out *verifyToolResponse) {
+	if out == nil {
+		return
+	}
+	switch {
+	case out.Abstain:
+		out.Note = "Abstain (not failure): no lint/build/test cmds resolved. Pass explicit cmds or set project verify_* config."
+		out.WhatNext = "Pass lint_cmd/build_cmd/test_cmd (aliases lint/build/test), or finish_check with verify_abstained=true + verify_reason — never invent a green gate"
+		out.RecommendedNextTools = []string{"project_context", "finish_check", "diagnostics"}
+	case out.Accepted:
+		out.Note = "Verify green — set finish_check verify_ran=true before claiming done."
+		out.WhatNext = "Run review_diff (if not yet), then finish_check verify_ran=true — claim done only when can_claim_done=true"
+		out.RecommendedNextTools = []string{"review_diff", "finish_check"}
+	default:
+		out.Note = "Verify failed — fix reasons below, then re-run verify. Do not call finish_check verify_ran=true yet."
+		out.WhatNext = "Fix failing gate(s) from reasons, re-run verify (argv), then finish_check"
+		out.RecommendedNextTools = []string{"diagnostics", "verify", "review_diff"}
+	}
+}
+
+func truncTail(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
 }
 
 func reviewDiffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		format := resolveFormat(args)
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -1643,8 +2055,50 @@ func reviewDiffHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return mcp.NewToolResultText(string(b)), nil
+		resp := reviewDiffToolResponse{
+			Summary:         out.Summary,
+			Risk:            out.Risk,
+			Findings:        out.Findings,
+			RequiredActions: out.RequiredActions,
+		}
+		annotateReviewDiffWhatNext(&resp)
+		return mustToolResultFormatted(resp, format)
+	}
+}
+
+type reviewDiffToolResponse struct {
+	Summary              string           `json:"summary"`
+	Risk                 string           `json:"risk"`
+	Findings             []review.Finding `json:"findings"`
+	RequiredActions      []string         `json:"required_actions,omitempty"`
+	Note                 string           `json:"note,omitempty"`
+	WhatNext             string           `json:"what_next,omitempty"`
+	RecommendedNextTools []string         `json:"recommended_next_tools,omitempty"`
+}
+
+func annotateReviewDiffWhatNext(out *reviewDiffToolResponse) {
+	if out == nil {
+		return
+	}
+	blocking := 0
+	for _, f := range out.Findings {
+		if f.Severity == review.SeverityHigh || f.Severity == review.SeverityCritical {
+			blocking++
+		}
+	}
+	switch {
+	case blocking > 0:
+		out.Note = "Blocking findings present — fix before finish_check."
+		out.WhatNext = "Address high/critical findings, re-run diagnostics → review_diff, then verify → finish_check"
+		out.RecommendedNextTools = []string{"diagnostics", "verify", "finish_check"}
+	case len(out.RequiredActions) > 0:
+		out.Note = "Review completed with required actions."
+		out.WhatNext = "Complete required_actions, then verify (argv) → finish_check verify_ran=true"
+		out.RecommendedNextTools = []string{"verify", "finish_check", "diagnostics"}
+	default:
+		out.Note = "No blocking review findings — proceed to verify."
+		out.WhatNext = "Run verify (repo= or lint/build/test cmds), then finish_check verify_ran=true"
+		out.RecommendedNextTools = []string{"verify", "finish_check"}
 	}
 }
 
@@ -1960,7 +2414,38 @@ func assertRepoInWorkspaceScope(ctx context.Context, e registry.Entry) error {
 	if entryMatchesRoots(e, roots) {
 		return nil
 	}
-	return fmt.Errorf("repo %q is outside the current workspace; per-project tools only work in the open project (see `codehelper projects list`)", e.Name)
+	return fmt.Errorf("repo %q is outside the current workspace; per-project tools only work in the open project (see `codehelper projects list`). recovery_hint=%s — omit repo= or pass the open project's name", e.Name, RecoveryCheckWorkspace)
+}
+
+// workspaceMismatchNote soft-warns when the agent passed an explicit repo=
+// that differs from the open MCP workspace / spawn CWD. Hard scope failures
+// still come from assertRepoInWorkspaceScope; this catches "wrong project but
+// still in-scope" mistakes (nested eval beds, sibling apps).
+func workspaceMismatchNote(ctx context.Context, reg *registry.Registry, resolved registry.Entry, repoArg string) string {
+	if strings.TrimSpace(repoArg) == "" {
+		return ""
+	}
+	wsName, wsRoot, ok := currentWorkspaceRepoName(ctx, reg)
+	if !ok {
+		if roots, rok := scopeRoots(ctx); rok {
+			wsName, wsRoot, ok = repoNameForRoots(reg, roots)
+		}
+	}
+	if !ok || wsName == "" {
+		return ""
+	}
+	if strings.EqualFold(wsName, resolved.Name) {
+		return ""
+	}
+	// Same tree under different registry names is fine.
+	if normalizeComparablePath(wsRoot) == normalizeComparablePath(resolved.RootPath) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"workspace mismatch: open project appears to be %q (%s) but tools resolved repo=%q (%s). "+
+			"Omit repo= to bind the open workspace, or confirm you meant %q. recovery_hint=%s",
+		wsName, wsRoot, resolved.Name, resolved.RootPath, resolved.Name, RecoveryCheckWorkspace,
+	)
 }
 
 func currentWorkspaceRepoName(ctx context.Context, reg *registry.Registry) (string, string, bool) {

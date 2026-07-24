@@ -4,6 +4,8 @@ Reference for codehelper's MCP tool surface: what each tool does, typical workfl
 
 **Tool count:** 60 (see `internal/mcpsvc/toolcatalog.go` for the canonical grouped list).
 
+**Param keys (agents most often get these wrong):** `context`/`context_bundle` → `name=` · `impact`/`change_kit` → `target=` · `kickoff`/`orchestrate` → `task=`. See [AGENT_QUICKSTART.md](../AGENT_QUICKSTART.md).
+
 **Defaults:** Every tool scopes to the current workspace unless `repo` is set. Array-heavy tools return **TOON** by default; pass `format=json` for JSON text.
 
 **Minimal listing:** `CODEHELPER_MINIMAL_TOOLS=1` or `codehelper config project --minimal on` advertises only the main tools in `tools/list`. Hidden tools remain callable by name; `project_context` still returns the full catalog.
@@ -96,7 +98,7 @@ Write tools carry `destructiveHint`. Patches are validated before apply.
 | Tool | Purpose |
 |---|---|
 | `diagnostics` | Auto-detect toolchain; run build/vet/typecheck; return structured problems (actionable first; generated/.next noise last). |
-| `verify` | Run lint/build/test commands (argv mode default; optional shell mode). |
+| `verify` | Run lint/build/test (argv default). Prefer plain strings (`"go test ./..."`); JSON arrays of tokens also accepted and Sprint-mangled `[cmd …]` blobs are recovered with a correction note. |
 | `review` | Deterministic diff audit: changed symbols, risk, tests to run, checklists. |
 | `review_diff` | Strict diff review for agent finish gates. |
 | `finish_check` | Completion gate: index freshness, verify status, blocking findings. |
@@ -115,7 +117,7 @@ Write tools carry `destructiveHint`. Patches are validated before apply.
 | `web_search` | Configured search provider (Tavily / Brave / DuckDuckGo). |
 | `browser` | Chromium (headless default): screenshot, actions, outline/snapshot (`ref:eN`), diagnostics, optional **headed/GUI**. |
 
-**First-time setup:** `codehelper browser install` (managed Chromium under `~/.codehelper/browser`). Smoke test: `codehelper browser test https://example.com`. `codehelper init` / `codehelper doctor` print stack-aware **setup suggestions** (local URL, `connections add-site`, headed mode, SSH tunnel patterns) plus a sample `.mcp.json`.
+**First-time setup:** rebuild with `-tags rod` (default in `scripts/install.ps1`, `scripts/install.sh`, and `scripts/build-local.ps1`; set `CODEHELPER_NO_ROD=1` to omit), then `codehelper browser install` (managed Chromium under `~/.codehelper/browser`). Smoke test: `codehelper browser test https://example.com`. `codehelper init` / `codehelper doctor` print stack-aware **setup suggestions** (local URL, `connections add-site`, headed mode, SSH tunnel patterns) plus a sample `.mcp.json`.
 
 **Per-project browser defaults** (`codehelper config project`): `browser_base_url`, `browser_site`, `browser_recipe`, `browser_headed`, `browser_allow_private`, `test_credentials_note`. Agents should propose `setup_suggestions` from `project_context` / `kickoff` **before the first browser run**.
 
@@ -144,7 +146,7 @@ Network access is policy-gated per project.
 | Tool | Purpose |
 |---|---|
 | `orchestration` | Enable / disable / status for local orchestration. |
-| `orchestrate` | Run a deterministic tool workflow for a task; returns `agent_brief` + trace. |
+| `orchestrate` | Guided workflow; slim default returns `agent_brief` + `what_next` + `next_queries` + trace (`detail=true` for full pack). |
 | `orchestration_feedback` | Critique a prior orchestration run. |
 | `orchestration_rerun` | Re-run with feedback applied. |
 | `orchestration_memory` | Recall prior orchestration runs. |

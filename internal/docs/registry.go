@@ -159,12 +159,15 @@ func ResolveFull(name, version, ecosystem, repoRoot string) Resolved {
 // a registry-page source for namespaced packages (Go modules, npm scopes) or
 // the cargo crate page when the ecosystem hint says so, else guessed hosts for
 // bare names. Sources is empty only when nothing plausible can be inferred.
-func resolve(name, version, ecosystem string, overrides []libEntry) Resolved {
+// When version is set, docs.rs / pkg.go.dev URLs are pinned to that version
+// (Context7-style package@version fidelity for registry-hosted API docs).
+func resolve(name, version, ecosystem string, overrides []libEntry) (r Resolved) {
 	want := strings.ToLower(strings.TrimSpace(name))
-	r := Resolved{Name: name, Version: version}
+	r = Resolved{Name: name, Version: version}
 	if want == "" {
 		return r
 	}
+	defer pinVersionIntoResolved(&r)
 	// A caller can pass a documentation/API-reference URL directly (e.g. an
 	// OpenAPI page, a specific guide, or an internal docs site) instead of a
 	// library name. Fetch it as-is — no curation, no registry lookup — which is
@@ -177,6 +180,13 @@ func resolve(name, version, ecosystem string, overrides []libEntry) Resolved {
 		r.Origin = "direct-url"
 		r.Ecosystem = ecosystemFor(base)
 		r.Sources = sourcesForDocBase(base)
+		if looksLikeOpenAPIURL(base) {
+			r.Note = "OpenAPI/Swagger URL — fetched as API reference (JSON/YAML/HTML)"
+			r.TrustScore = 8
+			// Prefer the document itself as html/raw; skip invented llms.txt for
+			// machine-readable specs (they almost never publish one).
+			r.Sources = []Source{{URL: base, Kind: "html"}}
+		}
 		return r
 	}
 	for _, e := range overrides {
@@ -219,6 +229,81 @@ func resolve(name, version, ecosystem string, overrides []libEntry) Resolved {
 	return r
 }
 
+// pinVersionIntoResolved rewrites known version-aware registry doc URLs so a
+// resolved Version actually changes what is fetched (not just the cache key).
+// Only docs.rs and pkg.go.dev are rewritten; curated marketing/docs sites and
+// direct OpenAPI URLs are left alone.
+func pinVersionIntoResolved(r *Resolved) {
+	if r == nil {
+		return
+	}
+	ver := strings.TrimSpace(r.Version)
+	if ver == "" {
+		return
+	}
+	r.DocBase = pinVersionURL(r.DocBase, ver)
+	for i := range r.Sources {
+		r.Sources[i].URL = pinVersionURL(r.Sources[i].URL, ver)
+	}
+}
+
+// pinVersionURL rewrites a single docs.rs or pkg.go.dev URL to a concrete
+// version. Other hosts are returned unchanged.
+func pinVersionURL(raw, version string) string {
+	raw = strings.TrimSpace(raw)
+	version = strings.TrimSpace(version)
+	if raw == "" || version == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case host == "docs.rs":
+		return pinDocsRSURL(u, version)
+	case host == "pkg.go.dev":
+		return pinPkgGoDevURL(u, version)
+	default:
+		return raw
+	}
+}
+
+// pinDocsRSURL turns /crate/latest/mod… into /crate/<semver>/mod….
+// docs.rs versions are semver without a leading "v".
+func pinDocsRSURL(u *url.URL, version string) string {
+	ver := strings.TrimPrefix(version, "v")
+	if ver == "" {
+		return u.String()
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 {
+		return u.String()
+	}
+	if parts[1] != "latest" {
+		return u.String()
+	}
+	parts[1] = ver
+	u.Path = "/" + strings.Join(parts, "/")
+	return u.String()
+}
+
+// pinPkgGoDevURL appends @vX.Y.Z when the path is not already versioned.
+// Go module versions on pkg.go.dev use a leading "v".
+func pinPkgGoDevURL(u *url.URL, version string) string {
+	path := strings.TrimSuffix(u.Path, "/")
+	if path == "" || strings.Contains(path, "@") {
+		return u.String()
+	}
+	goVer := version
+	if goVer != "" && goVer[0] != 'v' && goVer[0] >= '0' && goVer[0] <= '9' {
+		goVer = "v" + goVer
+	}
+	u.Path = path + "@" + goVer
+	return u.String()
+}
+
 // registryEntry derives a documentation entry for a namespaced package on a
 // public registry, turning "every package on pkg.go.dev / npm / docs.rs" into a
 // resolvable source without per-library curation. The ecosystem hint (when
@@ -234,6 +319,17 @@ func registryEntry(name, ecosystem string) (libEntry, bool) {
 			docBase:   "https://pkg.go.dev/" + name,
 			trust:     6,
 			ecosystem: "go",
+			htmlOnly:  true,
+		}, true
+	case strings.HasPrefix(name, "@types/"):
+		// DefinitelyTyped: prefer the DT types tree (readable .d.ts) and the npm
+		// @types package page. Agents coding against ambient types get the
+		// declarations, not just a marketing site.
+		pkg := strings.TrimPrefix(name, "@types/")
+		return libEntry{
+			docBase:   "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/" + pkg,
+			trust:     7,
+			ecosystem: "npm",
 			htmlOnly:  true,
 		}, true
 	case strings.HasPrefix(name, "@") && strings.Count(name, "/") == 1:
@@ -253,6 +349,20 @@ func registryEntry(name, ecosystem string) (libEntry, bool) {
 			ecosystem: "cargo",
 			htmlOnly:  true,
 		}, true
+	case strings.Count(name, "/") == 1 && !strings.HasPrefix(name, "@") && !isGoModulePath(name) &&
+		(ecosystem == "" || ecosystem == "composer"):
+		// Composer vendor/package — Packagist package page (registry meta may
+		// upgrade to homepage/repository when network is on).
+		first := name[:strings.IndexByte(name, '/')]
+		if !strings.Contains(first, ".") {
+			return libEntry{
+				docBase:   "https://packagist.org/packages/" + name,
+				trust:     5,
+				ecosystem: "composer",
+				htmlOnly:  true,
+			}, true
+		}
+		return libEntry{}, false
 	default:
 		return libEntry{}, false
 	}
@@ -331,6 +441,25 @@ func derivedSources(name string) []Source {
 func looksLikeURL(s string) bool {
 	s = strings.TrimSpace(s)
 	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
+
+// looksLikeOpenAPIURL reports machine-readable API specs (OpenAPI/Swagger) so
+// resolve can treat them as direct API references without inventing llms.txt.
+func looksLikeOpenAPIURL(s string) bool {
+	u := strings.ToLower(strings.TrimSpace(s))
+	if u == "" {
+		return false
+	}
+	for _, tip := range []string{
+		"openapi.json", "openapi.yaml", "openapi.yml",
+		"swagger.json", "swagger.yaml", "swagger.yml",
+		"/openapi", "/swagger",
+	} {
+		if strings.Contains(u, tip) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesEntry(e libEntry, want string) bool {

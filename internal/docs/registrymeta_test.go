@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,36 @@ func TestResolveFromRegistry_MissReturnsFalse(t *testing.T) {
 	ff := &fakeFetcher{bodies: map[string]FetchResult{}} // all 404
 	if _, ok := resolveFromRegistry(context.Background(), ff, "nonesuch", "cargo"); ok {
 		t.Fatal("expected miss")
+	}
+}
+
+func TestResolveFromRegistry_Packagist(t *testing.T) {
+	ff := &fakeFetcher{bodies: map[string]FetchResult{
+		"https://packagist.org/packages/nesbot/carbon.json": {StatusCode: 200, Body: `{
+			"package": {"name": "nesbot/carbon", "repository": "https://github.com/briannesbitt/Carbon",
+			"versions": {"3.8.0": {"version": "3.8.0", "homepage": "https://carbon.nesbot.com"}}}}`},
+	}}
+	m, ok := resolveFromRegistry(context.Background(), ff, "nesbot/carbon", "composer")
+	if !ok {
+		t.Fatal("expected packagist resolution")
+	}
+	if m.DocBase != "https://carbon.nesbot.com" || m.Source != "packagist" || m.Version != "3.8.0" {
+		t.Fatalf("got docBase=%q source=%q version=%q", m.DocBase, m.Source, m.Version)
+	}
+	// vendor/package with empty ecosystem should prefer Packagist.
+	m2, ok := resolveFromRegistry(context.Background(), ff, "nesbot/carbon", "")
+	if !ok || m2.Source != "packagist" {
+		t.Fatalf("empty-eco ok=%v source=%q", ok, m2.Source)
+	}
+}
+
+func TestResolveComposerVendorPackageDerivation(t *testing.T) {
+	r := Resolve("nesbot/carbon", "")
+	if r.Origin != "derived" || r.Ecosystem != "composer" {
+		t.Fatalf("origin=%q eco=%q want derived/composer", r.Origin, r.Ecosystem)
+	}
+	if !strings.Contains(r.DocBase, "packagist.org/packages/nesbot/carbon") {
+		t.Errorf("DocBase=%q want packagist", r.DocBase)
 	}
 }
 

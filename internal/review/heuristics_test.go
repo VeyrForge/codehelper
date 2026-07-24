@@ -1,6 +1,10 @@
 package review
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsCodeSourceFile(t *testing.T) {
 	tests := []struct {
@@ -86,6 +90,10 @@ func TestIsSecondaryNoisePath(t *testing.T) {
 		{"packages/svelte/tests/snapshot/samples/x/_expected/main.js", true},
 		{"fixtures/data.json", true},
 		{".github/testdata/index.html", true},
+		{"codehelper/internal/daemon/lock.go", true},
+		{"codehelper/internal/mcpsvc/register.go", true},
+		{"cmd/codehelper/main.go", false},
+		{"internal/daemon/lock.go", false},
 		{"packages/core/src/injector.ts", false},
 		{"fastapi/applications.py", false},
 		{"lib/application.js", false},
@@ -94,6 +102,34 @@ func TestIsSecondaryNoisePath(t *testing.T) {
 		if got := IsSecondaryNoisePath(tc.path); got != tc.want {
 			t.Errorf("IsSecondaryNoisePath(%q)=%v want %v", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestIsNestedForeignToolTree(t *testing.T) {
+	if !IsNestedForeignToolTree("codehelper/internal/review/release_readiness.go") {
+		t.Fatal("top-level nested codehelper/")
+	}
+	if IsNestedForeignToolTree("cmd/codehelper/main.go") {
+		t.Fatal("cmd/codehelper must stay searchable")
+	}
+	if IsNestedForeignToolTree("internal/mcpsvc/register.go") {
+		t.Fatal("first-party codehelper sources must not match")
+	}
+}
+
+func TestLooksLikeNestedCodehelperProduct(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "codehelper")
+	if err := os.MkdirAll(filepath.Join(nested, "internal", "mcpsvc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !LooksLikeNestedCodehelperProduct(nested) {
+		t.Fatal("expected nested product with internal/mcpsvc")
+	}
+	empty := filepath.Join(dir, "other")
+	_ = os.MkdirAll(empty, 0o755)
+	if LooksLikeNestedCodehelperProduct(empty) {
+		t.Fatal("empty dir must not look like codehelper product")
 	}
 }
 

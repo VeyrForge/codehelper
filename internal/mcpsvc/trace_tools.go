@@ -54,7 +54,7 @@ func traceHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if from == "" {
 			return mcp.NewToolResultError("from is required — the entrypoint symbol name or sym: id to trace outward from (e.g. \"ServeHTTP\")"), nil
 		}
-		to := argFirst(args, "to", "target")
+		to := argFirst(args, "to", "target", "name", "symbol", "sym")
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

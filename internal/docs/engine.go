@@ -13,6 +13,10 @@ type Result struct {
 	Library    string         `json:"library"`
 	Version    string         `json:"version,omitempty"`
 	Ecosystem  string         `json:"ecosystem,omitempty"`
+	// VersionSource is how Version was chosen: lockfile | manifest | explicit | registry | "".
+	VersionSource string `json:"version_source,omitempty"`
+	// Lockfile is the lockfile basename when VersionSource=lockfile (e.g. go.sum, package-lock.json).
+	Lockfile   string         `json:"lockfile,omitempty"`
 	Topic      string         `json:"topic,omitempty"`
 	Resolved   Resolved       `json:"resolved"`
 	SourceUsed string         `json:"source_used,omitempty"`
@@ -83,12 +87,30 @@ func kindPriority(kind string) int {
 // Network=false it returns the resolved sources and how to enable fetching.
 func (e *Engine) Lookup(ctx context.Context, opts LookupOptions) (*Result, error) {
 	lib := strings.TrimSpace(opts.Library)
-	version := strings.TrimSpace(opts.Version)
+	explicitVersion := strings.TrimSpace(opts.Version)
+	version := explicitVersion
 	ecosystem := ""
+	versionSource := ""
+	lockfile := ""
+	if explicitVersion != "" {
+		versionSource = "explicit"
+	}
 	if opts.RepoRoot != "" {
-		if v, eco := ResolveVersion(opts.RepoRoot, lib); v != "" {
+		if v, eco, lf := ResolveVersionDetail(opts.RepoRoot, lib); v != "" {
 			if version == "" {
 				version = v
+				if lf != "" {
+					versionSource = "lockfile"
+					lockfile = lf
+				} else {
+					versionSource = "manifest"
+				}
+			} else if lf != "" && version == v {
+				// Explicit matches lock pin — still surface provenance for agents.
+				lockfile = lf
+				if versionSource == "explicit" {
+					versionSource = "explicit+lockfile"
+				}
 			}
 			ecosystem = eco
 		}
@@ -123,17 +145,27 @@ func (e *Engine) Lookup(ctx context.Context, opts LookupOptions) (*Result, error
 				}
 				if version == "" && meta.Version != "" {
 					version = meta.Version
+					if versionSource == "" {
+						versionSource = "registry"
+					}
 				}
 			}
 		}
 	}
 
+	// Registry meta (and late version fills) can land after ResolveFull; re-pin
+	// so docs.rs / pkg.go.dev URLs match the final Version used for cache keys.
+	resolved.Version = version
+	pinVersionIntoResolved(&resolved)
+
 	res := &Result{
-		Library:   lib,
-		Version:   version,
-		Ecosystem: resolved.Ecosystem,
-		Topic:     opts.Topic,
-		Resolved:  resolved,
+		Library:       lib,
+		Version:       version,
+		Ecosystem:     resolved.Ecosystem,
+		VersionSource: versionSource,
+		Lockfile:      lockfile,
+		Topic:         opts.Topic,
+		Resolved:      resolved,
 	}
 
 	if !opts.Network {

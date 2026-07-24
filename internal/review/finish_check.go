@@ -13,10 +13,12 @@ type FinishCheckInput struct {
 
 // FinishCheckOutput matches MCP finish_check tool.
 type FinishCheckOutput struct {
-	CompletionState   string   `json:"completion_state"`
-	CanClaimDone      bool     `json:"can_claim_done"`
-	MissingBeforeDone []string `json:"missing_before_done"`
-	Note              string   `json:"note,omitempty"`
+	CompletionState      string   `json:"completion_state"`
+	CanClaimDone         bool     `json:"can_claim_done"`
+	MissingBeforeDone    []string `json:"missing_before_done"`
+	Note                 string   `json:"note,omitempty"`
+	WhatNext             string   `json:"what_next,omitempty"`
+	RecommendedNextTools []string `json:"recommended_next_tools,omitempty"`
 }
 
 // BuildFinishCheck merges release_readiness with verify hygiene.
@@ -57,10 +59,20 @@ func BuildFinishCheck(in FinishCheckInput) FinishCheckOutput {
 	}
 	if out.CanClaimDone {
 		out.Note = "Gate green — safe to claim done."
+		out.WhatNext = "Claim done — can_claim_done=true. Summarize the change; do not invent extra work."
+		out.RecommendedNextTools = nil
 	} else if in.VerifyAbstained {
 		out.Note = "Verify abstained — do not claim done as green; report the reason and remaining missing_before_done."
-	} else {
+		out.WhatNext = "Report abstain reason from missing_before_done; do not set can_claim_done=true. Re-run verify when cmds exist."
+		out.RecommendedNextTools = []string{"verify", "project_context", "diagnostics"}
+	} else if !in.VerifyRan {
 		out.Note = "Gate blocked — run verify (or set verify_abstained+verify_reason), then finish_check again. Do not invent can_claim_done=true."
+		out.WhatNext = "Run verify (argv lint_cmd/build_cmd/test_cmd, or repo= so cmds auto-fill), then finish_check verify_ran=true"
+		out.RecommendedNextTools = []string{"verify", "diagnostics", "review_diff"}
+	} else {
+		out.Note = "Gate blocked — address missing_before_done (review/release), then finish_check again. Do not invent can_claim_done=true."
+		out.WhatNext = "Fix blocking findings / required actions, then re-run review_diff → finish_check"
+		out.RecommendedNextTools = []string{"review_diff", "diagnostics", "verify"}
 	}
 	return out
 }
@@ -78,10 +90,12 @@ func BuildFinishCheckAbstain(baseRef, reason string) FinishCheckOutput {
 		reason = "finish_check could not evaluate the diff/release gate"
 	}
 	return FinishCheckOutput{
-		CompletionState:   "abstain",
-		CanClaimDone:      false,
-		MissingBeforeDone: []string{reason, "re-run on a real git history or pass verify_abstained=true with verify_reason"},
-		Note:              "Abstain (not error): gate unavailable on this worktree. Do not claim done; do not treat finish_check as broken.",
+		CompletionState:      "abstain",
+		CanClaimDone:         false,
+		MissingBeforeDone:    []string{reason, "re-run on a real git history or pass verify_abstained=true with verify_reason"},
+		Note:                 "Abstain (not error): gate unavailable on this worktree. Do not claim done; do not treat finish_check as broken.",
+		WhatNext:             "Do not claim done. Prefer verify_abstained=true + verify_reason on shallow/ephemeral beds, or re-run on a real git history.",
+		RecommendedNextTools: []string{"verify", "project_context"},
 	}
 }
 

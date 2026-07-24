@@ -1,5 +1,9 @@
-# Build codehelper.exe into THIS repository under .\bin\codehelper.exe (fixed path — no placeholders).
+# Build codehelper.exe into THIS repository under .\bin\codehelper.exe (fixed path - no placeholders).
 # If gcc is not on PATH, downloads WinLibs into .vendor\winlibs-mingw64 (same as `codehelper update`).
+#
+# Default includes -tags rod (headless browser / screenshot MCP tools), matching
+# scripts/install.ps1 and release builds. Set CODEHELPER_NO_ROD=1 for a lean build.
+# After a rod build, run once:  .\bin\codehelper.exe browser install
 #
 # Usage (from repo root or anywhere):
 #   powershell -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
@@ -55,11 +59,34 @@ Write-Host "Repository: $repoRoot"
 Write-Host "Building version $ver ->"
 Write-Host "  $out"
 
-go build -trimpath -ldflags "-s -w -X github.com/VeyrForge/codehelper/internal/version.linkVersion=$ver" -o $out ./cmd/codehelper
+# -tags rod compiles in the headless-browser tier (screenshot/console tools);
+# set CODEHELPER_NO_ROD=1 for a lean build without it (matches install.ps1).
+$buildArgs = @("build", "-trimpath")
+if (-not $env:CODEHELPER_NO_ROD) {
+  $buildArgs += @("-tags", "rod")
+  Write-Host "Tags: rod (browser tier on). Set CODEHELPER_NO_ROD=1 to omit."
+} else {
+  Write-Host "Tags: none (CODEHELPER_NO_ROD set - browser tier off)."
+}
+$buildArgs += @(
+  "-ldflags", "-s -w -X github.com/VeyrForge/codehelper/internal/version.linkVersion=$ver",
+  "-o", $out,
+  "./cmd/codehelper"
+)
+& go @buildArgs
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "go build failed (exit $LASTEXITCODE)"
+}
 
 Write-Host ""
 Write-Host "Build OK. Smoke test:"
 & $out version
+if (-not $env:CODEHELPER_NO_ROD) {
+  Write-Host ""
+  Write-Host "Browser tier: first time, download managed Chromium (~150MB):"
+  Write-Host "  $out browser install"
+  Write-Host "Smoke:  $out browser test https://example.com -o .testbeds\reports\browser-smoke.webp"
+}
 Write-Host ""
 Write-Host "Use THIS executable for Cursor / VS Code (Codehelper Executable Path):"
 Write-Host "  $out"

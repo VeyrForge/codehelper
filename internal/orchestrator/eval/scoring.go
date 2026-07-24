@@ -118,6 +118,16 @@ func coverageForTask(task Task, hay string) float64 {
 			cov = 0.55
 		}
 	}
+	if task.Kind == "security" && (strings.Contains(hay, "security") || strings.Contains(hay, "secret") || strings.Contains(hay, "injection") || strings.Contains(hay, "auth") || strings.Contains(hay, "risk")) {
+		if cov < 0.55 {
+			cov = 0.55
+		}
+	}
+	if task.Kind == "optimization" && (strings.Contains(hay, "hotspot") || strings.Contains(hay, "performance") || strings.Contains(hay, "n+1") || strings.Contains(hay, "impact") || strings.Contains(hay, "centrality")) {
+		if cov < 0.55 {
+			cov = 0.55
+		}
+	}
 	return cov
 }
 
@@ -131,6 +141,12 @@ func diagnoseGaps(task Task, blob string, pack orchestrator.ContextPack, workflo
 	}
 	if task.Kind == "dead_code" && !strings.Contains(blob, "dead") && !strings.Contains(workflow, "dead_code") {
 		gaps = append(gaps, "dead_code workflow not selected or no dead symbols surfaced")
+	}
+	if task.Kind == "security" && !strings.Contains(blob, "security") && !strings.Contains(blob, "secret") && !strings.Contains(blob, "risk") && !strings.Contains(workflow, "security") {
+		gaps = append(gaps, "security workflow not selected or no security signals surfaced")
+	}
+	if task.Kind == "optimization" && !strings.Contains(blob, "hotspot") && !strings.Contains(blob, "performance") && !strings.Contains(workflow, "perf") {
+		gaps = append(gaps, "performance workflow not selected or no hotspot signals surfaced")
 	}
 	if task.Kind == "feature" {
 		hasReuse := strings.Contains(blob, "reuse") || strings.Contains(blob, "kickoff") || strings.Contains(blob, "orient")

@@ -44,7 +44,9 @@ func normalizeVersion(raw string) string {
 }
 
 // ListDependencies reads all supported manifests under repoRoot (root level
-// only, where manifests live) and returns the declared dependencies.
+// only, where manifests live) and returns the declared dependencies. When a
+// lockfile is present, Version is upgraded to the exact installed pin
+// (Context7-style package@version fidelity for "what does *my* dep expose?").
 func ListDependencies(repoRoot string) []Dependency {
 	var deps []Dependency
 	deps = append(deps, readPackageJSON(repoRoot)...)
@@ -53,24 +55,37 @@ func ListDependencies(repoRoot string) []Dependency {
 	deps = append(deps, readPyProject(repoRoot)...)
 	deps = append(deps, readComposerJSON(repoRoot)...)
 	deps = append(deps, readCargoToml(repoRoot)...)
-	return dedupeDeps(deps)
+	deps = dedupeDeps(deps)
+	return overlayLockPins(deps, ListLockPins(repoRoot))
 }
 
 // ResolveVersion finds the version a project pins for libName (case-insensitive,
-// matching either the exact dep name or a doc-friendly short name). Returns the
-// version and ecosystem, or empty strings if the project does not depend on it.
+// matching either the exact dep name or a doc-friendly short name). Prefers
+// lockfile-exact versions over manifest constraints. Returns the version and
+// ecosystem, or empty strings if the project does not depend on it.
 func ResolveVersion(repoRoot, libName string) (version, ecosystem string) {
+	v, eco, _ := ResolveVersionDetail(repoRoot, libName)
+	return v, eco
+}
+
+// ResolveVersionDetail is ResolveVersion plus the lockfile basename when the
+// pin came from a lockfile (empty when the pin is manifest-only or missing).
+func ResolveVersionDetail(repoRoot, libName string) (version, ecosystem, lockfile string) {
 	want := strings.ToLower(strings.TrimSpace(libName))
 	if want == "" {
-		return "", ""
+		return "", "", ""
+	}
+	// Lockfiles first: exact installed version beats "^15.0.0" constraints.
+	if v, eco, lf := ResolveLockVersion(repoRoot, libName); v != "" {
+		return v, eco, lf
 	}
 	for _, d := range ListDependencies(repoRoot) {
 		dn := strings.ToLower(d.Name)
 		if dn == want || shortName(dn) == want || strings.HasSuffix(dn, "/"+want) {
-			return d.Version, d.Ecosystem
+			return d.Version, d.Ecosystem, ""
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // shortName returns the last path/scope segment of a dependency name, e.g.

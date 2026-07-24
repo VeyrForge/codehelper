@@ -14,6 +14,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/VeyrForge/codehelper/pkg/types"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -120,15 +121,19 @@ type callSite struct {
 }
 
 type changeKitResponse struct {
-	Target     apiSym          `json:"target"`
-	Definition string          `json:"definition,omitempty"`
-	Callers    []callSite      `json:"callers"`
-	CallerOver int             `json:"callers_truncated,omitempty"`
-	Tests      []compactSym    `json:"tests_covering"`
-	RiskTier   string          `json:"risk_tier,omitempty"`
-	CoChanges  []cochange.Rule `json:"co_changes,omitempty"`
-	Checklist  []string        `json:"checklist"`
-	Note       string          `json:"note"`
+	Target               apiSym          `json:"target"`
+	Definition           string          `json:"definition,omitempty"`
+	Callers              []callSite      `json:"callers"`
+	CallerOver           int             `json:"callers_truncated,omitempty"`
+	Tests                []compactSym    `json:"tests_covering"`
+	RiskTier             string          `json:"risk_tier,omitempty"`
+	CallGraphConfidence  string          `json:"call_graph_confidence,omitempty"`
+	CoChanges            []cochange.Rule `json:"co_changes,omitempty"`
+	Checklist            []string        `json:"checklist"`
+	EditHint             string          `json:"edit_hint,omitempty"`
+	Note                 string          `json:"note"`
+	WhatNext             string          `json:"what_next,omitempty"`
+	RecommendedNextTools []string        `json:"recommended_next_tools,omitempty"`
 }
 
 const changeKitMaxCallers = 25
@@ -143,7 +148,18 @@ func changeKitHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		args := req.GetArguments()
 		target := argFirst(args, "target", "name", "symbol", "sym")
 		if target == "" {
-			return mcp.NewToolResultError("target is required — pass `target` (not `name`/`symbol`) with the symbol you intend to change (sym: id from query)"), nil
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message: "target is required — wrong/missing arg. Expected: {\"target\":\"SymbolName\"} (or sym: id from query). " +
+					"Canonical key is target= — context/context_bundle use name= instead. " +
+					"Aliases accepted: name, symbol, sym — retry once with target=….",
+				Expected: "{\"target\":\"SymbolName\"}",
+				Example:  map[string]any{"target": "LoginHandler"},
+				WhatNext: "Retry change_kit with target=<exact name or sym: id from query>",
+				RecommendedNextTools: []string{"query", "change_kit", "context"},
+			}), nil
 		}
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
@@ -155,16 +171,81 @@ func changeKitHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 		defer st.Close()
 
-		sym, err := resolveTraceSymbol(ctx, st, repo.Name, target)
-		if err != nil || sym == nil {
-			hint := fmt.Sprintf(
-				"no indexed symbol named %q. Call `query` with that name (or a shorter unique fragment) to get the exact symbol / sym: id, then retry change_kit with target=<exact name or sym:…>. If the symbol is new, run `codehelper analyze` first.",
-				target,
-			)
-			if sugg := suggestSimilarSymbols(ctx, st, repo.Name, target, 5); len(sugg) > 0 {
-				hint += " Close indexed names: " + strings.Join(sugg, ", ") + "."
+		// Bare vibe targets (health|ready|/healthz) and synthetic placement_*
+		// seeds skip graph resolve — fuzzy hits like isClusterHealthy /
+		// replacement_link must not win (LIVE-BROAD-V6: kickoff→change_kit).
+		if isBareHealthishTarget(target) || isPlacementTarget(target) {
+			if res, ok := changeKitHealthishFallback(repo.RootPath, target, resolveFormat(args)); ok {
+				return res, nil
 			}
-			return mcp.NewToolResultError(hint), nil
+		}
+
+		// Prefer shared resolver (fixture demotion + fan-in auto-pick) over trace
+		// ranking so change_kit and context/impact agree on ambiguous short names.
+		wantPath := strings.TrimSpace(argFirst(args, "path", "file"))
+		wantLine := int(argFloat(args, "line", 0))
+		sym, cands, rerr := resolveSymbolByName(ctx, st, repo.Name, target, wantPath, wantLine)
+		if rerr != nil || sym == nil {
+			if sym == nil && len(cands) > 0 {
+				// Fall back to most-connected exact match (trace policy) when fan-in
+				// race was too close for auto-pick — still better than hard miss.
+				if ts, terr := resolveTraceSymbol(ctx, st, repo.Name, target); terr == nil && ts != nil {
+					sym = ts
+				}
+			}
+			if sym == nil {
+				if isHealthishTarget(target) {
+					if res, ok := changeKitHealthishFallback(repo.RootPath, target, resolveFormat(args)); ok {
+						return res, nil
+					}
+				}
+				hint := fmt.Sprintf(
+					"no indexed symbol named %q. Call `query` with that name (or a shorter unique fragment) to get the exact symbol / sym: id, then retry change_kit with target=<exact name or sym:…>. If the symbol is new, run `codehelper analyze --force` first.",
+					target,
+				)
+				if len(cands) > 0 {
+					locs := make([]string, 0, len(cands))
+					for i, c := range cands {
+						if i >= 5 {
+							break
+						}
+						locs = append(locs, c.Name+" @ "+c.Loc+" ("+c.ID+")")
+					}
+					return toolResultRecoveryError(agentRecovery{
+						ErrorCategory: ErrCategoryAmbiguous,
+						IsRetryable:   true,
+						RecoveryHint:  RecoveryDisambiguate,
+						Message: fmt.Sprintf(
+							"ambiguous symbol %q — pass path= (and optional line=) or target=<sym: id>. Candidates: %s",
+							target, strings.Join(locs, "; "),
+						),
+						Expected: "path= or target=sym:…",
+						Example:  map[string]any{"target": target, "path": "path/from/candidate"},
+						WhatNext: "Retry change_kit with path= or a sym: id from candidates",
+						RecommendedNextTools: []string{"query", "change_kit", "context"},
+					}), nil
+				}
+				rec := agentRecovery{
+					ErrorCategory: ErrCategoryNotFound,
+					IsRetryable:   true,
+					RecoveryHint:  RecoveryTryAlternative,
+					Message:       hint,
+					Expected:      "exact indexed symbol or sym: id",
+					Example:       map[string]any{"target": target},
+					WhatNext:      fmt.Sprintf("query: %s — then change_kit target=<exact>", target),
+					RecommendedNextTools: []string{"query", "ast_query"},
+					NextQueries: []string{
+						fmt.Sprintf("query: %s", target),
+						"codehelper analyze --force",
+					},
+				}
+				if sugg := suggestSimilarSymbols(ctx, st, repo.Name, target, 5); len(sugg) > 0 {
+					rec.Message += " Close indexed names: " + strings.Join(sugg, ", ") + "."
+					rec.RecoveryHint = RecoveryDisambiguate
+					rec.Example["close_names"] = sugg
+				}
+				return toolResultRecoveryError(rec), nil
+			}
 		}
 
 		out := changeKitResponse{Target: apiSym{
@@ -215,15 +296,163 @@ func changeKitHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		out.CoChanges = cochange.ForFile(repo.RootPath, sym.Path, cochange.Options{})
 
 		out.Checklist = buildChangeChecklist(sym, len(callers)+out.CallerOver, tests)
+		if conf := callGraphConfidence(ctx, st, repo.Name); conf != "" {
+			out.CallGraphConfidence = conf
+			out.Checklist = append(out.Checklist,
+				"SPARSE CALL GRAPH — callers/tests_covering are under-counted; confirm with a textual search + the test suite before treating empty as safe.")
+		}
 		if len(out.CoChanges) > 0 {
 			top := out.CoChanges[0]
 			out.Checklist = append(out.Checklist, fmt.Sprintf(
 				"In this repo's history, %s usually changes together with this file (%.0f%% of the time) — check whether it also needs updating.",
 				top.File, top.Confidence*100))
 		}
-		out.Note = "Everything to change this symbol in one shot: its definition, every call site (with the calling line), covering tests, historically co-changing files, and a consistency checklist. Edit the definition, reconcile each caller if the signature changes, then run the covering tests (see `test_impact`)."
+		out.Checklist = append(out.Checklist,
+			"Edit via apply_patch_workspace_file (dry_run=true first) using the definition below — do not rewrite the whole file.")
+		relPath := sym.Path
+		out.EditHint = fmt.Sprintf(
+			"apply_patch_workspace_file path=%s dry_run=true hunks=[{old_string:<copy from definition>, new_string:<edit>}]; then omit dry_run to write",
+			relPath,
+		)
+		out.Note = "Everything to change this symbol in one shot: its definition (bounded), every call site (with the calling line), covering tests, historically co-changing files, and a consistency checklist. Prefer apply_patch dry_run → apply → diagnostics over whole-file rewrites."
+		out.WhatNext = fmt.Sprintf(
+			"Preview: apply_patch_workspace_file path=%s dry_run=true — then apply, then diagnostics → review_diff → verify → finish_check",
+			relPath,
+		)
+		out.RecommendedNextTools = []string{"apply_patch_workspace_file", "diagnostics", "review_diff", "verify", "finish_check"}
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
+}
+
+// changeKitHealthishFallback resolves bare health/ready targets via on-disk
+// /health seed, HTTP framework placement, or a clear ABSTAIN. ok=false only when
+// the target is not healthish (caller should continue with normal miss handling).
+func changeKitHealthishFallback(root, target, format string) (*mcp.CallToolResult, bool) {
+	if !isHealthishTarget(target) {
+		return nil, false
+	}
+	readDef := func(loc string) (pathOnly string, lineNo int, def string) {
+		pathOnly = loc
+		if i := strings.LastIndex(loc, ":"); i > 0 {
+			pathOnly = loc[:i]
+			fmt.Sscanf(loc[i+1:], "%d", &lineNo)
+		}
+		if b, rerr := os.ReadFile(filepath.Join(root, filepath.FromSlash(pathOnly))); rerr == nil {
+			lines := strings.Split(string(b), "\n")
+			start := lineNo - 1
+			if start < 0 {
+				start = 0
+			}
+			end := start + 12
+			if end > len(lines) {
+				end = len(lines)
+			}
+			if start < len(lines) {
+				def = strings.Join(lines[start:end], "\n")
+			}
+		}
+		return pathOnly, lineNo, def
+	}
+	// Named placement_* from kickoff/scout — match that seed before generic health.
+	if isPlacementTarget(target) {
+		want := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(target, "sym:")))
+		for _, s := range scanHTTPPlacementOnDisk(root, 24) {
+			if !strings.EqualFold(s.Name, want) {
+				continue
+			}
+			_, _, def := readDef(s.Loc)
+			out := changeKitResponse{
+				Target:     apiSym{Name: s.Name, Kind: "placement", Loc: s.Loc, Signature: s.Signature},
+				Definition: def,
+				Checklist: []string{
+					"Synthetic placement seed from kickoff/scout (not an indexed symbol) — add GET /health near THIS router/app API.",
+					"Do not invent a second HTTP stack; extend the existing framework entrypoint.",
+					"Edit via apply_patch_workspace_file (dry_run=true first).",
+					"After editing: diagnostics → review_diff → verify → finish_check.",
+				},
+				Note: "change_kit resolved placement target `" + s.Name + "` via HTTP placement seed. " +
+					"what_next: add route near `" + s.Loc + "` — Next: diagnostics after patch.",
+				WhatNext:             "Add GET /health near `" + s.Loc + "` via apply_patch dry_run=true — then diagnostics → review_diff → verify",
+				RecommendedNextTools: []string{"apply_patch_workspace_file", "diagnostics", "review_diff", "verify", "finish_check"},
+			}
+			res, _ := mustToolResultFormatted(out, format)
+			return res, true
+		}
+		// Named placement missing on disk — fall through to health / any placement.
+	}
+	if seeded := scanHealthRoutesOnDisk(root, 1); len(seeded) > 0 {
+		s := seeded[0]
+		_, _, def := readDef(s.Loc)
+		out := changeKitResponse{
+			Target:     apiSym{Name: s.Name, Kind: "route", Loc: s.Loc, Signature: s.Signature},
+			Definition: def,
+			Checklist: []string{
+				"Disk-seeded /health|/ready route (may be anonymous / unindexed) — extend THIS file:line.",
+				"Do not invent a second health stack; keep the existing path contract.",
+				"Edit via apply_patch_workspace_file (dry_run=true first).",
+				"After editing: diagnostics → review_diff → verify → finish_check.",
+			},
+			Note: "change_kit resolved healthish target via on-disk /health|/ready seed (graph miss). " +
+				"what_next: extend `" + s.Loc + "` — Next: diagnostics after patch.",
+			WhatNext:             "Extend `" + s.Loc + "` via apply_patch dry_run=true — then diagnostics → review_diff → verify",
+			RecommendedNextTools: []string{"apply_patch_workspace_file", "diagnostics", "review_diff", "verify", "finish_check"},
+		}
+		res, _ := mustToolResultFormatted(out, format)
+		return res, true
+	}
+	shape := security.DetectProjectShape(root)
+	surface := security.DetectHTTPSurface(root)
+	if surface.Capable {
+		if place := scanHTTPPlacementOnDisk(root, 1); len(place) > 0 {
+			s := place[0]
+			_, _, def := readDef(s.Loc)
+			out := changeKitResponse{
+				Target:     apiSym{Name: s.Name, Kind: "placement", Loc: s.Loc, Signature: s.Signature},
+				Definition: def,
+				Checklist: []string{
+					"HTTP-capable project (" + surface.Reason + ") — no existing /health|/ready found.",
+					"Create GET /health (optional /ready) via this router/app API or an examples/ server — do not invent a second stack.",
+					"Edit via apply_patch_workspace_file (dry_run=true first).",
+					"After editing: diagnostics → review_diff → verify → finish_check.",
+				},
+				Note: "change_kit resolved healthish target via HTTP placement seed (no /health literal yet). " +
+					"what_next: add route near `" + s.Loc + "` — Next: diagnostics after patch.",
+				WhatNext:             "Add GET /health near `" + s.Loc + "` via apply_patch dry_run=true — then diagnostics → review_diff → verify",
+				RecommendedNextTools: []string{"apply_patch_workspace_file", "diagnostics", "review_diff", "verify", "finish_check"},
+			}
+			res, _ := mustToolResultFormatted(out, format)
+			return res, true
+		}
+	}
+	next := vibeNextQueries("feature", shape, true, "add GET /health", root)
+	msg := "ABSTAIN: no indexed or on-disk /health|/ready route for target=" + target +
+		" (project_shape=" + string(shape) + "). "
+	if surface.Capable {
+		msg += "HTTP-capable (" + surface.Reason + ") — create path: add GET /health next to the router/app entry or examples/ server. "
+		next = []string{
+			"query: Router GET route add_url_rule APIRouter path HealthJSON",
+			"change_kit target=<top router/placement from query> — add GET /health there",
+			"diagnostics → review_diff → verify → finish_check after the patch",
+		}
+	} else if surface.Kind == "non_http" || shape == security.ShapeLibrary || shape == security.ShapeFrameworkCore {
+		reason := surface.Reason
+		if reason == "" {
+			reason = "library/framework core may not expose HTTP"
+		}
+		msg += reason + " — do not invent /health. "
+	} else {
+		msg += "Create path: add a GET /health (and optional /ready) next to the existing router/server entrypoint. "
+	}
+	msg += "Next queries: (1) " + next[0] + "; (2) " + next[1] + "; (3) " + next[2]
+	return toolResultRecoveryError(agentRecovery{
+		ErrorCategory: ErrCategoryNotFound,
+		IsRetryable:   true,
+		RecoveryHint:  RecoveryReportToUser,
+		Message:       msg,
+		WhatNext:      "Follow next_queries — do not invent /health on non-HTTP cores",
+		RecommendedNextTools: []string{"query", "kickoff", "change_kit"},
+		NextQueries:   next,
+	}), true
 }
 
 func buildChangeChecklist(sym *types.Symbol, callers, tests int) []string {

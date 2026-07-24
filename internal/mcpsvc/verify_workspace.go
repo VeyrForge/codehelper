@@ -73,9 +73,32 @@ func resolveVerifyWorkspace(repoRoot string) verifyWorkspace {
 
 func toolchainAt(dir string) (name string, cmds, allowed []string, ok bool) {
 	for _, tc := range orderedToolchains {
-		if fileExists(filepath.Join(dir, tc.marker)) {
-			return tc.name, append([]string(nil), tc.cmds...), append([]string(nil), tc.allowed...), true
+		if !fileExists(filepath.Join(dir, tc.marker)) {
+			continue
 		}
+		name = tc.name
+		cmds = append([]string(nil), tc.cmds...)
+		allowed = append([]string(nil), tc.allowed...)
+		switch name {
+		case "python":
+			cmds, allowed = pythonDiagCmds(dir)
+		case "php":
+			if c, a, phpOK := phpDiagCmds(dir); phpOK {
+				cmds, allowed = c, a
+			} else if len(cmds) == 0 {
+				continue
+			}
+		case "javascript":
+			if c, a, jsOK := nodeDiagCmds(dir); jsOK {
+				cmds, allowed = c, a
+			} else if len(cmds) == 0 {
+				continue
+			}
+		}
+		if len(cmds) == 0 {
+			continue
+		}
+		return name, cmds, allowed, true
 	}
 	return "", nil, nil, false
 }
@@ -99,7 +122,7 @@ func allowedForCommands(cmds []string) []string {
 
 func verifyWorkspaceNote(ws verifyWorkspace) string {
 	if len(ws.Cmds) == 0 {
-		return "no toolchain auto-detected (looked for go.mod, Cargo.toml, tsconfig.json, phpstan.neon, pyproject.toml/setup.py/requirements.txt, pom.xml, build.gradle, and nested sub-projects). Pass an explicit `command` to diagnostics or set verify_cwd / verify_build via `codehelper config project`."
+		return "no toolchain auto-detected (looked for go.mod, Cargo.toml, tsconfig.json, package.json, phpstan.neon/composer.json, pyproject.toml/setup.py/requirements.txt/Pipfile, pom.xml, build.gradle, and nested sub-projects). Pass an explicit `command` to diagnostics or set verify_cwd / verify_build via `codehelper config project`."
 	}
 	if ws.Source != "" && ws.Source != "root" {
 		return "using verify workspace " + ws.Source + " (cwd=" + ws.Cwd + ")"

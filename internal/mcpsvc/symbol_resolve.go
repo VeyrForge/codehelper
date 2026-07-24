@@ -73,11 +73,19 @@ func resolveSymbolByName(ctx context.Context, st *graph.Store, repoID, name, wan
 	// sample collisions, FastAPI docs_src, Express examples).
 	if pref := preferNonFixtureSymbols(exact); len(pref) == 1 {
 		return &pref[0], nil, nil
+	} else if len(pref) > 1 {
+		exact = pref
 	}
 	// Framework monorepos often ONLY ship samples — pick a stable canonical
 	// tutorial path so bare impact/context still answers without path=.
 	if canon := preferCanonicalSample(exact); canon != nil {
 		return canon, nil, nil
+	}
+	// Ambiguous production defs: auto-pick the most connected (highest fan-in)
+	// so agents following kickoff→context without path= still get a usable answer.
+	// Clear winner only (≥2× second place, or sole non-zero); otherwise return candidates.
+	if picked := preferHighestFanIn(ctx, st, repoID, exact); picked != nil {
+		return picked, nil, nil
 	}
 	sort.Slice(exact, func(i, j int) bool {
 		fi, fj := isFixtureSymbolPath(exact[i].Path), isFixtureSymbolPath(exact[j].Path)
@@ -167,4 +175,39 @@ func preferCanonicalSample(syms []types.Symbol) *types.Symbol {
 		}
 	}
 	return best
+}
+
+// preferHighestFanIn auto-picks the most-referenced exact match when it clearly
+// dominates (sole non-zero fan-in, or ≥2× the runner-up). Returns nil when the
+// race is too close — caller should surface candidates + path=.
+func preferHighestFanIn(ctx context.Context, st *graph.Store, repoID string, syms []types.Symbol) *types.Symbol {
+	if len(syms) < 2 || st == nil {
+		return nil
+	}
+	type scored struct {
+		sym *types.Symbol
+		n   int
+	}
+	rows := make([]scored, 0, len(syms))
+	for i := range syms {
+		n := 0
+		if callers, err := st.CallersOf(ctx, repoID, syms[i].ID); err == nil {
+			n = len(callers)
+		}
+		rows = append(rows, scored{sym: &syms[i], n: n})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].n != rows[j].n {
+			return rows[i].n > rows[j].n
+		}
+		return rows[i].sym.Path < rows[j].sym.Path
+	})
+	best, second := rows[0], rows[1]
+	if best.n == 0 {
+		return nil
+	}
+	if second.n == 0 || best.n >= second.n*2 {
+		return best.sym
+	}
+	return nil
 }

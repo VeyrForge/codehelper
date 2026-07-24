@@ -193,12 +193,12 @@ func TestEnrichImpactResponseIncludesImpactRelatedTools(t *testing.T) {
 	enrichImpactResponse(&out, nil)
 	has := false
 	for _, x := range out.RecommendedNextTools {
-		if x == "detect_changes" {
+		if x == "change_kit" || x == "test_impact" {
 			has = true
 			break
 		}
 	}
 	if !has {
-		t.Fatalf("expected detect_changes in %#v", out.RecommendedNextTools)
+		t.Fatalf("expected change_kit/test_impact in %#v", out.RecommendedNextTools)
 	}
 }

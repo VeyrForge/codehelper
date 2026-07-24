@@ -202,6 +202,29 @@ func TestGenerateTypeAndVersion(t *testing.T) {
 		}
 	})
 
+	t.Run("monorepo root package.json promotes go backend over node", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"discord-mod","private":true,"scripts":{"dev:api":"cd backend && go run ./cmd/api"}}`)
+		writeFile(t, dir, "backend/go.mod", "module api\n\ngo 1.22\n")
+		writeFile(t, dir, "backend/internal/api/routes.go", "package api\n"+strings.Repeat("// handler\n", 80))
+		writeFile(t, dir, "frontend/package.json", `{"name":"web","dependencies":{"svelte":"^4.0.0"}}`)
+		writeFile(t, dir, "frontend/src/app.js", strings.Repeat(" console.log(1)\n", 40))
+		// theme-builder would dominate JS bytes — must be skipped from lang stats
+		writeFile(t, dir, "theme-builder/package.json", `{"name":"tb"}`)
+		writeFile(t, dir, "theme-builder/export/prerender/prerender-entry.js", strings.Repeat("export const x=1\n", 4000))
+		p, err := Generate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ProjectType != "go" {
+			t.Errorf("ProjectType=%q want go (not node); primary=%q stats=%+v subs=%+v",
+				p.ProjectType, p.PrimaryLanguage, p.LanguageStats, p.SubProjects)
+		}
+		if p.PrimaryLanguage != "go" {
+			t.Errorf("PrimaryLanguage=%q want go", p.PrimaryLanguage)
+		}
+	})
+
 	t.Run("nestjs self-named package wins over express dep", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, dir, "package.json", `{"name":"@nestjs/core","version":"11.1.28","dependencies":{"express":"^5.2.1"}}`)
@@ -388,6 +411,68 @@ end
 		}
 		if !sawGuzzle {
 			t.Errorf("expected guzzle dependency extracted, got %+v", p.Dependencies)
+		}
+	})
+
+	t.Run("django pyproject overrides node package.json", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"django-assets","devDependencies":{"biome":"1.0.0"}}`)
+		writeFile(t, dir, "pyproject.toml", "[project]\nname = \"Django\"\nrequires-python = \">= 3.12\"\n")
+		writeFile(t, dir, "django/__init__.py", strings.Repeat("# django package\n", 40))
+		writeFile(t, dir, "js_tests/admin.js", "export const x = 1\n")
+		p, err := Generate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ProjectType != "django" {
+			t.Errorf("ProjectType=%q want django (not node)", p.ProjectType)
+		}
+		if p.Framework != "django" {
+			t.Errorf("Framework=%q want django", p.Framework)
+		}
+		if p.PrimaryLanguage != "python" {
+			t.Errorf("PrimaryLanguage=%q want python (stats=%+v)", p.PrimaryLanguage, p.LanguageStats)
+		}
+	})
+
+	t.Run("ReadOrGenerate refreshes stale node-over-python cache", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"django-assets"}`)
+		writeFile(t, dir, "pyproject.toml", "[project]\nname = \"Django\"\nrequires-python = \">= 3.12\"\n")
+		writeFile(t, dir, "django/__init__.py", strings.Repeat("# django\n", 40))
+		// Persist a stale mislabel as older binaries did.
+		stale := `{"project_type":"node","primary_language":"python","languages":["python","javascript"]}`
+		_ = os.MkdirAll(filepath.Join(dir, ".codehelper"), 0o755)
+		if err := os.WriteFile(filepath.Join(dir, ".codehelper", "project_profile.json"), []byte(stale), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p, err := ReadOrGenerate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ProjectType == "node" {
+			t.Fatalf("ReadOrGenerate kept stale node; got %+v", p)
+		}
+		if p.ProjectType != "django" && p.ProjectType != "python" {
+			t.Errorf("ProjectType=%q want django or python", p.ProjectType)
+		}
+	})
+
+	t.Run("rails gemfile overrides node package.json", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "package.json", `{"name":"rails-js","dependencies":{"webpack":"5.0.0"}}`)
+		writeFile(t, dir, "Gemfile", "source 'https://rubygems.org'\ngem 'rails', '~> 7.1'\n")
+		writeFile(t, dir, "bin/rails", "#!/usr/bin/env ruby\n")
+		writeFile(t, dir, "app/models/user.rb", strings.Repeat("class User < ApplicationRecord\nend\n", 30))
+		p, err := Generate(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ProjectType != "rails" && p.ProjectType != "ruby" {
+			t.Errorf("ProjectType=%q want rails or ruby (not node)", p.ProjectType)
+		}
+		if p.ProjectType == "node" {
+			t.Fatal("ProjectType must not stay node when Gemfile+Ruby dominate")
 		}
 	})
 }

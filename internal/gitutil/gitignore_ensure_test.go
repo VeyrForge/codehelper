@@ -37,8 +37,14 @@ func TestEnsureCodehelperGitignored_appendsOnce(t *testing.T) {
 		t.Fatal("expected append")
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
-	if !strings.Contains(string(data), ".codehelper/") {
-		t.Fatalf("missing ignore line: %q", data)
+	got := string(data)
+	for _, want := range []string{".codehelper/", "CLAUDE.md", ".cursor/", ".claude/"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing ignore line %q in: %q", want, got)
+		}
+	}
+	if !strings.Contains(got, codehelperIgnoreBanner) {
+		t.Fatalf("missing banner in: %q", got)
 	}
 	added2, err := EnsureCodehelperGitignored(dir)
 	if err != nil {
@@ -52,7 +58,8 @@ func TestEnsureCodehelperGitignored_appendsOnce(t *testing.T) {
 func TestEnsureCodehelperGitignored_respectsExisting(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".codehelper/\n"), 0o644); err != nil {
+	existing := ".codehelper/\nCLAUDE.md\n.cursor/\n.claude/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	added, err := EnsureCodehelperGitignored(dir)
@@ -61,6 +68,30 @@ func TestEnsureCodehelperGitignored_respectsExisting(t *testing.T) {
 	}
 	if added {
 		t.Fatal("expected no-op when already ignored")
+	}
+}
+
+func TestEnsureCodehelperGitignored_fillsPartial(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".codehelper/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	added, err := EnsureCodehelperGitignored(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added {
+		t.Fatal("expected append of remaining entries")
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	got := string(data)
+	if !strings.Contains(got, "CLAUDE.md") || !strings.Contains(got, ".cursor/") || !strings.Contains(got, ".claude/") {
+		t.Fatalf("expected remaining ignores, got: %q", got)
+	}
+	// Must not duplicate .codehelper/
+	if strings.Count(got, ".codehelper/") != 1 {
+		t.Fatalf("duplicated .codehelper/: %q", got)
 	}
 }
 
@@ -78,6 +109,16 @@ func TestCodehelperAlreadyIgnored_variants(t *testing.T) {
 		if got := codehelperAlreadyIgnored(tc.content); got != tc.want {
 			t.Errorf("codehelperAlreadyIgnored(%q) = %v, want %v", tc.content, got, tc.want)
 		}
+	}
+}
+
+func TestMissingCodehelperIgnores(t *testing.T) {
+	missing := missingCodehelperIgnores("node_modules/\n")
+	if len(missing) != len(codehelperIgnoreEntries) {
+		t.Fatalf("want %d missing, got %v", len(codehelperIgnoreEntries), missing)
+	}
+	if got := missingCodehelperIgnores(".codehelper/\nCLAUDE.md\n.cursor/\n.claude/\n"); len(got) != 0 {
+		t.Fatalf("want none missing, got %v", got)
 	}
 }
 

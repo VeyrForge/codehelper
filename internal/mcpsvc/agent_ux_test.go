@@ -9,6 +9,7 @@ import (
 
 	"github.com/VeyrForge/codehelper/internal/graph"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
+	"github.com/VeyrForge/codehelper/internal/review"
 	"github.com/VeyrForge/codehelper/pkg/types"
 )
 
@@ -191,6 +192,27 @@ func demoteFixtureHitsPathOnly(hits []retrieval.RankedSymbol) []retrieval.Ranked
 	out = append(out, primary...)
 	out = append(out, noise...)
 	return out
+}
+
+func TestDemoteFixtureHits_NestedForeignCodehelper(t *testing.T) {
+	hits := []retrieval.RankedSymbol{
+		{Symbol: types.Symbol{ID: "a", Name: "loadSessions", Path: "codehelper/vscode-extension/src/mainPanelProvider.ts"}, Score: 1.0},
+		{Symbol: types.Symbol{ID: "b", Name: "GetSession", Path: "backend/internal/auth/session_store.go"}, Score: 0.8},
+		{Symbol: types.Symbol{ID: "c", Name: "SaveSession", Path: "backend/internal/auth/session_store.go"}, Score: 0.7},
+	}
+	got, demoted := demoteFixtureHits(hits)
+	if demoted < 1 {
+		t.Fatalf("expected nested codehelper demoted, demoted=%d got=%+v", demoted, got)
+	}
+	if got[0].Symbol.Path != "backend/internal/auth/session_store.go" {
+		t.Fatalf("host auth must rank first, got %s", got[0].Symbol.Path)
+	}
+	if !review.IsNestedForeignToolTree("codehelper/vscode-extension/src/mainPanelProvider.ts") {
+		t.Fatal("expected nested path true")
+	}
+	if review.IsNestedForeignToolTree("cmd/codehelper/main.go") {
+		t.Fatal("cmd/codehelper must stay searchable")
+	}
 }
 
 func TestFormatHubs_DropsStyleAndFixtures(t *testing.T) {

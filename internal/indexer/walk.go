@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/VeyrForge/codehelper/internal/review"
 )
 
 var defaultSkipDirs = map[string]struct{}{
@@ -78,6 +80,13 @@ func WalkSourceFiles(root string, skipDir, skip func(rel string) bool) ([]string
 		if d.IsDir() {
 			base := filepath.Base(path)
 			if _, ok := defaultSkipDirs[base]; ok {
+				return filepath.SkipDir
+			}
+			// Nested foreign codehelper checkouts (e.g. discord_mod/codehelper/)
+			// pollute host-app indexes. Keep cmd/codehelper (CLI package) intact.
+			if base == "codehelper" && rel != "." && rel != "cmd/codehelper" &&
+				!strings.HasPrefix(rel, "cmd/codehelper/") &&
+				review.LooksLikeNestedCodehelperProduct(path) {
 				return filepath.SkipDir
 			}
 			// Prune excluded subtrees WHOLE — never descend into a gitignored

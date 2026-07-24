@@ -8,6 +8,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/detect"
 	"github.com/VeyrForge/codehelper/internal/freshness"
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
+	"github.com/VeyrForge/codehelper/internal/profile"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -29,8 +30,8 @@ func RegisterRetrievalFacadeTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("search_hybrid", searchHybridHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("context_bundle",
-		mcp.WithDescription("ACI one-shot for ONE symbol: bounded SOURCE + callers + callees + imports (+ nearby tests). Prefer after search_hybrid/query instead of chaining context + read_workspace_file. Pass name or sym: id; path= disambiguates collisions."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Symbol name or sym: id (aliases: symbol, sym, target)")),
+		mcp.WithDescription("ACI one-shot for ONE symbol: bounded SOURCE + callers + callees + imports (+ nearby tests). Prefer after search_hybrid/query instead of chaining context + read_workspace_file. PARAM: name= (same as context; NOT change_kit's target=). Pass path= to disambiguate collisions."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("REQUIRED key is `name` — symbol name or sym: id (aliases: symbol, sym, target). Same as context; different from change_kit's target=.")),
 		mcp.WithString("path", mcp.Description("Definition file to disambiguate")),
 		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
 		mcp.WithNumber("max_callers", mcp.Description("Caller cap (default 24)"), mcp.DefaultNumber(0)),
@@ -120,7 +121,10 @@ func contextBundleHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		args := req.GetArguments()
 		name := argFirst(args, "name", "symbol", "sym", "target")
 		if name == "" {
-			return mcp.NewToolResultError("name is required — pass name or sym: id from search_hybrid/query"), nil
+			return mcp.NewToolResultError(
+				"name is required — wrong/missing arg. Expected: {\"name\":\"SymbolName\"} (or sym: id from search_hybrid/query). " +
+					"Canonical key is name= (same as context). change_kit uses target= instead.",
+			), nil
 		}
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
@@ -172,23 +176,52 @@ func contextBundleHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			"freshness":              fresh,
 			"recommended_next_tools": []string{"impact", "trace", "change_kit"},
 		}
+		primaryLang := ""
+		if pr, perr := profile.ReadOrGenerate(repo.RootPath); perr == nil && pr != nil {
+			primaryLang = pr.PrimaryLanguage
+		}
+		graphConf := callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
 		if bun != nil && bun.Symbol != nil {
-			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, bun.Symbol.ID, 2, "upstream"); aerr == nil && res != nil && len(res.Nodes) > 1 {
-				br := blastRadius{RiskTier: res.RiskTier, Dependents: len(res.Nodes) - 1}
-				for _, n := range res.Nodes {
-					if n.Depth == 0 || len(br.Top) >= 6 {
-						continue
-					}
-					br.Top = append(br.Top, fmt.Sprintf("%s %s", n.Name, locOf(n.Path, n.SymbolID)))
+			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, bun.Symbol.ID, 2, "upstream"); aerr == nil && res != nil {
+				deps := len(res.Nodes) - 1
+				if deps < 0 {
+					deps = 0
 				}
-				out["blast_radius"] = br
+				if len(res.Nodes) > 1 || graphConf != "" || (isDynamicSparseLanguage(primaryLang) && deps == 0) {
+					br := blastRadius{
+						RiskTier:   res.RiskTier,
+						Dependents: deps,
+						Confidence: graphConf,
+					}
+					if graphConf != "" && deps == 0 {
+						br.RiskTier = "unknown"
+					}
+					for _, n := range res.Nodes {
+						if n.Depth == 0 || len(br.Top) >= 6 {
+							continue
+						}
+						br.Top = append(br.Top, fmt.Sprintf("%s %s", n.Name, locOf(n.Path, n.SymbolID)))
+					}
+					out["blast_radius"] = br
+				}
 			}
 		}
-		if bun != nil && len(bun.Callers) == 0 && len(bun.Callees) == 0 && len(bun.Imports) == 0 {
+		emptyEdges := bun != nil && len(bun.Callers) == 0 && len(bun.Callees) == 0 && len(bun.Imports) == 0
+		if graphConf != "" {
+			out["call_graph_confidence"] = graphConf
+			out["confidence"] = 0.45
+			if emptyEdges {
+				out["note"] = "SPARSE/empty edges — do NOT treat as leaf-safe. " + graphConf
+			} else {
+				out["note"] = "SPARSE CALL GRAPH — callers may be under-counted. " + graphConf
+			}
+		} else if emptyEdges {
 			out["note"] = "no graph edges resolved — leaf-like or unresolved edges; try impact/trace or codehelper analyze --force"
 		}
 		if fresh.Stale {
 			out["warning"] = "index may be stale: " + fresh.StaleReason
+			out["recovery_hint"] = RecoveryRefreshIndex
+			out["suggested_fix"] = "codehelper analyze --force"
 		}
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}

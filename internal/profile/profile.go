@@ -160,12 +160,14 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 			p.Versions["rust"] = v
 		}
 	}
-	if hasFile("pyproject.toml") || hasFile("setup.py") || hasFile("requirements.txt") {
+	if hasFile("pyproject.toml") || hasFile("setup.py") || hasFile("requirements.txt") || hasFile("manage.py") {
 		pms["pip"] = struct{}{}
 		langs["python"] = struct{}{}
 		p.TestCommands = append(p.TestCommands, "pytest")
 		p.LintCommands = append(p.LintCommands, "ruff check", "python3 -m compileall -q .")
-		if p.ProjectType == "" {
+		// Python backend wins over incidental package.json (Django/Flask assets,
+		// biome tooling) — same override pattern as composer/mix vs node.
+		if p.ProjectType == "" || p.ProjectType == "node" {
 			p.ProjectType = "python"
 		}
 		if hasFile("pyproject.toml") {
@@ -175,8 +177,21 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 			}
 		} else if hasFile("setup.py") {
 			entries = append(entries, "setup.py")
-		} else {
+		} else if hasFile("requirements.txt") {
 			entries = append(entries, "requirements.txt")
+		} else {
+			entries = append(entries, "manage.py")
+		}
+	}
+	if hasFile("Gemfile") || gemspecPresent(repoRoot) {
+		pms["bundler"] = struct{}{}
+		langs["ruby"] = struct{}{}
+		p.TestCommands = append(p.TestCommands, "bundle exec rspec", "bundle exec rake test")
+		if p.ProjectType == "" || p.ProjectType == "node" {
+			p.ProjectType = "ruby"
+		}
+		if hasFile("Gemfile") {
+			entries = append(entries, "Gemfile")
 		}
 	}
 	// Elixir / Mix — overrides Node when both package.json (JS client assets) and
@@ -263,6 +278,14 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 		}
 	}
 
+	// Final guard: package.json alone must not keep "node" when byte-dominant
+	// language is a backend/runtime stack (Django with biome.json, Rails with JS
+	// packs, Redis with Python utils, Spring with CSS). Framework detection above
+	// already overrides when it matches; this catches bare language dominance.
+	if p.ProjectType == "node" && primary != "" && !isJSFamilyLanguage(primary) {
+		p.ProjectType = primary
+	}
+
 	// Resolve the single headline version for the project's defining stack:
 	// engine → framework → language runtime, in that order of specificity. Skip if
 	// detection already set it directly (e.g. a WordPress plugin's own version).
@@ -288,6 +311,7 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 	// Multi-stack repos (monorepos): report each nested project independently.
 	if scanSub {
 		p.SubProjects = detectSubProjects(repoRoot)
+		preferBackendMonorepoStack(&p)
 	}
 
 	// Framework/language pitfalls the LLM should know up front (fewer mistakes,
@@ -300,6 +324,74 @@ func generateProfile(repoRoot string, scanSub bool) (ProjectProfile, error) {
 	}
 
 	return p, nil
+}
+
+// preferBackendMonorepoStack promotes API/backend stacks when a root package.json
+// would otherwise label a Go/Python/… monorepo as node (JS dashboard bytes).
+// Prefer backend/api/server/svc sub-projects; keep language_stats honest.
+func preferBackendMonorepoStack(p *ProjectProfile) {
+	if p == nil || len(p.SubProjects) == 0 {
+		return
+	}
+	rootJS := p.ProjectType == "node" || p.ProjectType == "javascript" || p.ProjectType == "typescript" ||
+		isJSFamilyProjectType(p.ProjectType)
+	if !rootJS {
+		return
+	}
+	backendPaths := map[string]bool{
+		"backend": true, "api": true, "server": true, "svc": true, "service": true,
+		"services": true, "apps/api": true, "apps/backend": true, "packages/api": true,
+	}
+	var best *SubProject
+	for i := range p.SubProjects {
+		sp := &p.SubProjects[i]
+		path := strings.ToLower(sp.Path)
+		base := path
+		if i := strings.LastIndex(path, "/"); i >= 0 {
+			base = path[i+1:]
+		}
+		if !backendPaths[path] && !backendPaths[base] {
+			continue
+		}
+		if isJSFamilyLanguage(sp.PrimaryLanguage) && isJSFamilyProjectType(sp.ProjectType) {
+			continue
+		}
+		if sp.ProjectType == "" || sp.ProjectType == "unknown" {
+			continue
+		}
+		best = sp
+		break
+	}
+	if best == nil {
+		return
+	}
+	// Promote root type to the backend stack.
+	p.ProjectType = best.ProjectType
+	if best.Framework != "" {
+		p.Framework = best.Framework
+	}
+	if best.Version != "" && p.Version == "" {
+		p.Version = best.Version
+	}
+	if best.PrimaryLanguage != "" {
+		p.PrimaryLanguage = best.PrimaryLanguage
+	}
+	if p.Versions == nil {
+		p.Versions = map[string]string{}
+	}
+	if best.Version != "" && best.PrimaryLanguage != "" {
+		p.Versions[best.PrimaryLanguage] = best.Version
+	}
+}
+
+func isJSFamilyProjectType(pt string) bool {
+	switch strings.ToLower(strings.TrimSpace(pt)) {
+	case "node", "javascript", "typescript", "nextjs", "nuxt", "sveltekit", "remix",
+		"react", "vue", "angular", "nestjs", "express":
+		return true
+	default:
+		return false
+	}
 }
 
 // langExt maps a file extension to a language id (consistent with the indexer's
@@ -371,7 +463,11 @@ func collectLangStats(repoRoot string, langs map[string]struct{}) ([]LanguageSta
 				// Unity/Godot/Unreal generated + cache trees: huge and not source.
 				"Library", "Temp", "Obj", "obj", "Build", "Binaries", "Intermediate", "DerivedDataCache", ".godot", "PackageCache",
 				"dist", "build", "target", "__pycache__", ".venv", "venv",
-				".gradle":
+				".gradle",
+				// Tooling / export trees that inflate JS bytes in TS/Go monorepos
+				// (discord_mod theme-builder prerender, storybook, coverage).
+				"theme-builder", "prerender", "coverage", "storybook-static", ".storybook",
+				"__snapshots__", ".turbo", ".parcel-cache":
 				return filepath.SkipDir
 			}
 			if strings.Count(rel, string(filepath.Separator)) > 8 {
@@ -417,6 +513,18 @@ func collectLangStats(repoRoot string, langs map[string]struct{}) ([]LanguageSta
 // Spring Petclinic CSS bytes dominating Java).
 var markupOrDataLangs = map[string]bool{
 	"css": true, "html": true, "sql": true, "shell": true,
+}
+
+// isJSFamilyLanguage reports languages that legitimately belong with a "node"
+// project_type. Used to demote incidental package.json when Python/Ruby/C/etc.
+// dominate the tree.
+func isJSFamilyLanguage(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "javascript", "typescript", "vue", "svelte", "css", "html":
+		return true
+	default:
+		return false
+	}
 }
 
 func pickPrimaryLanguage(stats []LanguageStat) string {
@@ -486,13 +594,44 @@ func Read(repoRoot string) (*ProjectProfile, error) {
 // correct for projects that were indexed before profiles were written at index
 // time (or by an older binary) without forcing a reindex — the cost is one
 // bounded-depth scan, acceptable for the once-per-session bootstrap.
+//
+// When a cached profile still says project_type=node but primary_language is a
+// non-JS backend stack (Django+biome, Rails+webpack), regenerate — older
+// binaries wrote that mislabel and agents would otherwise keep seeing "node".
 func ReadOrGenerate(repoRoot string) (*ProjectProfile, error) {
-	if p, err := Read(repoRoot); err == nil && p != nil {
+	if p, err := Read(repoRoot); err == nil && p != nil && !profileStackStale(p) {
 		return p, nil
 	}
 	p, err := Generate(repoRoot)
 	if err != nil {
 		return nil, err
 	}
+	// Best-effort persist so the next Read is correct without another Generate.
+	_, _ = Write(repoRoot)
 	return &p, nil
+}
+
+// profileStackStale detects the package.json-wins-over-Python/Ruby mislabel that
+// older detectors persisted into project_profile.json.
+func profileStackStale(p *ProjectProfile) bool {
+	if p == nil {
+		return true
+	}
+	if p.ProjectType == "node" && p.PrimaryLanguage != "" && !isJSFamilyLanguage(p.PrimaryLanguage) {
+		return true
+	}
+	// Cached node label with a Go/Python backend sub-project — regenerate.
+	if p.ProjectType == "node" || p.ProjectType == "javascript" {
+		for _, sp := range p.SubProjects {
+			base := strings.ToLower(sp.Path)
+			if i := strings.LastIndex(base, "/"); i >= 0 {
+				base = base[i+1:]
+			}
+			if (base == "backend" || base == "api" || base == "server") &&
+				!isJSFamilyLanguage(sp.PrimaryLanguage) && sp.ProjectType != "" && sp.ProjectType != "unknown" {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -12,9 +12,11 @@ import (
 	"github.com/VeyrForge/codehelper/internal/freshness"
 	"github.com/VeyrForge/codehelper/internal/graph"
 	"github.com/VeyrForge/codehelper/internal/mcpimpact"
+	"github.com/VeyrForge/codehelper/internal/profile"
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/VeyrForge/codehelper/pkg/types"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -133,7 +135,23 @@ func testImpactHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 		sort.Strings(out.TestFiles)
 		if len(out.Tests) == 0 {
-			out.Note = "no tests reach the changed symbols via the indexed call graph. Either coverage is missing or the change is in untested code — add tests, or the index may lack edges (analyze --force)."
+			primaryLang := ""
+			if pr, perr := profile.ReadOrGenerate(repo.RootPath); perr == nil && pr != nil {
+				primaryLang = pr.PrimaryLanguage
+			}
+			graphConf := callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
+			if graphConf != "" || isDynamicSparseLanguage(primaryLang) {
+				out.Safety = "ABSTAIN / LOW confidence — sparse or dynamic call graph; empty tests is NOT proof of zero coverage"
+				out.Note = "ABSTAIN: no tests reach the changed symbols via the indexed call graph. " +
+					"On sparse/dynamic stacks this is expected under-count — do NOT treat as isolation proof. " +
+					"Run the package/suite tests, or use textual discovery. " + graphConf
+				if graphConf == "" && isDynamicSparseLanguage(primaryLang) {
+					out.Note = "ABSTAIN: no tests via call graph on primary_language=" + primaryLang +
+						" (dynamic dispatch often invisible). Empty test_impact ≠ zero coverage — run suite / textual search."
+				}
+			} else {
+				out.Note = "no tests reach the changed symbols via the indexed call graph. Either coverage is missing or the change is in untested code — add tests, or the index may lack edges (analyze --force)."
+			}
 		}
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
@@ -171,13 +189,30 @@ type scoutImpact struct {
 	Confidence string `json:"confidence,omitempty"`
 }
 
+// sparseGraphDensityThreshold is the call-edges-per-symbol floor below which
+// MCP tools emit LOW confidence. Doctor uses a stricter WARN floor (0.05) for
+// CLI health; agents need an earlier signal so empty blast_radius is never
+// read as isolation proof on dynamic stacks.
+const sparseGraphDensityThreshold = 0.5
+
+// dynamicSparseLanguages always get a LOW label when density is under the
+// higher dynamic threshold (or any empty inbound call set on that language).
+var dynamicSparseLanguages = map[string]struct{}{
+	"php": {}, "ruby": {}, "c": {}, "cpp": {}, "c++": {}, "objc": {},
+}
+
 // callGraphConfidence labels how much to trust call-graph-derived signals
 // (risk_tier, dependents, tests_covering). Static, heuristic resolution captures
 // most edges in statically-dispatched code (Go, Rust) but few in dynamic
-// frameworks (Laravel facades/DI, Rails, dynamic Python), where dependents/tests
-// are UNDER-counted. We measure resolved call-edge density (call edges ÷ symbols)
+// frameworks (Laravel facades/DI, Rails, C macros), where dependents/tests are
+// UNDER-counted. We measure resolved call-edge density (call edges ÷ symbols)
 // and warn when it's low so a "0 tests / low risk" isn't read as ground truth.
+// primaryLang (optional) tightens the threshold for PHP/Ruby/C/C++.
 func callGraphConfidence(ctx context.Context, st *graph.Store, repoID string) string {
+	return callGraphConfidenceLang(ctx, st, repoID, "")
+}
+
+func callGraphConfidenceLang(ctx context.Context, st *graph.Store, repoID, primaryLang string) string {
 	symbols, _, _, err := st.Counts(ctx, repoID)
 	if err != nil || symbols == 0 {
 		return ""
@@ -191,10 +226,29 @@ func callGraphConfidence(ctx context.Context, st *graph.Store, repoID string) st
 		callEdges += d
 	}
 	density := float64(callEdges) / float64(symbols)
-	if density < 0.5 {
-		return fmt.Sprintf("LOW — sparse call graph (%d call edges / %d symbols = %.2f/sym); likely a dynamic framework or a parser without call resolution (PHP/Ruby/C/C++). risk_tier & tests_covering are UNDER-counted. DIRECTIVE: do NOT treat a 0 as 'no callers/tests' — confirm by running the test suite and grepping the symbol name before assuming it is safe to change.", callEdges, symbols, density)
+	lang := strings.ToLower(strings.TrimSpace(primaryLang))
+	_, dynamic := dynamicSparseLanguages[lang]
+	threshold := sparseGraphDensityThreshold
+	if dynamic {
+		// Dynamic stacks often sit just above 0.5 while still missing facades /
+		// macros / require edges — warn earlier so agents never trust empty BR.
+		threshold = 1.0
+	}
+	if density < threshold {
+		langNote := "likely a dynamic framework or a parser without call resolution (PHP/Ruby/C/C++)"
+		if dynamic {
+			langNote = fmt.Sprintf("primary_language=%q typically under-resolves calls (facades/macros/require)", lang)
+		}
+		return fmt.Sprintf("LOW — sparse call graph (%d call edges / %d symbols = %.2f/sym); %s. risk_tier & tests_covering & blast_radius are UNDER-counted. DIRECTIVE: do NOT treat 0 callers / empty blast_radius / risk_tier=low as isolation proof — confirm with tests + a textual search before changing.", callEdges, symbols, density, langNote)
 	}
 	return ""
+}
+
+// isDynamicSparseLanguage reports languages whose static call graphs routinely
+// under-count callers (used when attaching self-only blast_radius warnings).
+func isDynamicSparseLanguage(lang string) bool {
+	_, ok := dynamicSparseLanguages[strings.ToLower(strings.TrimSpace(lang))]
+	return ok
 }
 
 // usageExample is a real call site of the top reuse candidate so the agent sees
@@ -212,7 +266,12 @@ type scoutResponse struct {
 	UsageOfTop      *usageExample    `json:"usage_of_top,omitempty"`
 	Freshness       string           `json:"freshness,omitempty"`
 	CollisionNote   string           `json:"collision_note,omitempty"`
-	Note            string           `json:"note"`
+	FindingsMode    string           `json:"findings_mode,omitempty"`
+	Abstain         string           `json:"abstain,omitempty"`
+	WhatNext             string           `json:"what_next,omitempty"`
+	NextQueries          []string         `json:"next_queries,omitempty"`
+	RecommendedNextTools []string         `json:"recommended_next_tools,omitempty"`
+	Note                 string           `json:"note"`
 }
 
 // scoutHandler pre-assembles the context needed to implement a change: existing
@@ -261,6 +320,7 @@ func scoutHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		hits, demoted := demoteFixtureHits(hits)
+		hits = demoteIntentMismatchedHits(task, hits)
 
 		out := scoutResponse{Task: task, CollisionNote: fixtureCollisionNote(demoted)}
 		for _, h := range hits {
@@ -273,38 +333,57 @@ func scoutHandler(reg *registry.Registry) server.ToolHandlerFunc {
 				Score:     round3(h.Score),
 			})
 		}
+		out.ReuseCandidates = dropStyleReuseCandidates(out.ReuseCandidates)
+		out.ReuseCandidates = preferFeatureReuse(out.ReuseCandidates, task)
+		out.ReuseCandidates = seedHealthRouteCandidates(repo.RootPath, out.ReuseCandidates, task)
+		if note := featureEndpointAbstainNote(task, security.DetectProjectShape(repo.RootPath), repo.RootPath, out.ReuseCandidates); note != "" {
+			out.Note = note
+			out.Abstain = note
+			out.FindingsMode = "abstain"
+			out.ReuseCandidates = clearNonHealthReuseForAbstain(out.ReuseCandidates, note)
+		}
 
 		// Blast radius + test coverage of the single best reuse candidate, so the
 		// agent immediately knows what changing it would touch.
-		if len(hits) > 0 {
-			top := hits[0].Symbol
-			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, top.ID, 4, "upstream"); aerr == nil && res != nil {
-				tests := 0
-				for _, n := range res.Nodes {
-					if n.Depth > 0 && review.IsTestPath(n.Path) && isTestSymbolKind(n.Kind) {
-						tests++
+		if len(out.ReuseCandidates) > 0 {
+			// Prefer graph hit for impact when still available; else skip.
+			if len(hits) > 0 && out.ReuseCandidates[0].Name == hits[0].Symbol.Name {
+				top := hits[0].Symbol
+				if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, top.ID, 4, "upstream"); aerr == nil && res != nil {
+					tests := 0
+					for _, n := range res.Nodes {
+						if n.Depth > 0 && review.IsTestPath(n.Path) && isTestSymbolKind(n.Kind) {
+							tests++
+						}
+					}
+					out.ImpactOfTop = &scoutImpact{
+						Target: top.Name, RiskTier: res.RiskTier,
+						Dependents: len(res.Nodes) - 1, Tests: tests,
+						Confidence: callGraphConfidence(ctx, st, repo.Name),
 					}
 				}
-				out.ImpactOfTop = &scoutImpact{
-					Target: top.Name, RiskTier: res.RiskTier,
-					Dependents: len(res.Nodes) - 1, Tests: tests,
-					Confidence: callGraphConfidence(ctx, st, repo.Name),
-				}
+				out.UsageOfTop = usageExampleFor(ctx, st, repo, top)
 			}
-			// Show a real call site so the agent can copy the calling convention
-			// instead of guessing it (or making another round-trip to read code).
-			out.UsageOfTop = usageExampleFor(ctx, st, repo, top)
 		}
 
 		fresh := freshness.Inspect(repo.RootPath)
 		if fresh.Stale {
 			out.Freshness = "index may be stale (" + fresh.StaleReason + ")"
 		}
-		if len(out.ReuseCandidates) == 0 {
-			out.Note = "no existing symbols match this task — likely new functionality; check imports/conventions before writing."
-		} else {
-			out.Note = "Prefer extending the high-caller reuse_candidates over writing new code. usage_of_top shows a real call site (copy its calling convention); impact_of_top shows what depends on the closest match and how many tests cover it — run test_impact before changing it."
+		if out.Note == "" {
+			if len(out.ReuseCandidates) == 0 {
+				out.Note = "no existing symbols match this task — likely new functionality; check imports/conventions before writing."
+			} else {
+				out.Note = "Prefer extending the high-caller reuse_candidates over writing new code. usage_of_top shows a real call site (copy its calling convention); impact_of_top shows what depends on the closest match and how many tests cover it — run test_impact before changing it."
+			}
 		}
+		var topCand *reuseCandidate
+		if len(out.ReuseCandidates) > 0 {
+			topCand = &out.ReuseCandidates[0]
+		}
+		out.NextQueries = featureEndpointNextQueries(task, out.Abstain != "")
+		out.WhatNext = buildWhatNext("feature", topCand, nil, out.Abstain, out.NextQueries)
+		out.RecommendedNextTools = vibeRecommendedTools("feature", topCand, out.Abstain != "")
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
 }

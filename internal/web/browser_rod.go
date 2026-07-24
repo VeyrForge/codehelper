@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,30 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 )
+
+// newBrowserLauncher returns a rod launcher with OS-safe defaults.
+// On Windows, Leakless is disabled: Defender/AV commonly quarantines
+// leakless.exe as PUA, which breaks every browser launch. Trade-off is
+// orphaned Chromium if the parent exits uncleanly — acceptable vs total failure.
+func newBrowserLauncher() *launcher.Launcher {
+	l := launcher.New()
+	if runtime.GOOS == "windows" {
+		l = l.Leakless(false)
+	}
+	return l
+}
+
+// wrapLeaklessHint adds recovery guidance when AV blocks rod's leakless helper.
+func wrapLeaklessHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "leakless") || strings.Contains(msg, "potentially unwanted") {
+		return fmt.Errorf("%w (Windows AV often blocks rod leakless.exe; this build disables Leakless on Windows — rebuild if you still see this)", err)
+	}
+	return err
+}
 
 // BrowserAvailable reports whether this build includes the browser tier.
 func BrowserAvailable() bool { return true }
@@ -57,7 +82,7 @@ func getBrowser(ctx context.Context) (*rod.Browser, error) {
 		// uncleanly-killed browser blocking the next launch. --no-sandbox keeps
 		// headless reliable across desktop/CI/container (we only load local/dev URLs,
 		// gated by GuardURL).
-		ctrl, err := launcher.New().
+		ctrl, err := newBrowserLauncher().
 			Bin(bin).
 			Headless(true).
 			Set("disable-gpu").
@@ -65,7 +90,7 @@ func getBrowser(ctx context.Context) (*rod.Browser, error) {
 			Set("no-sandbox").
 			Launch()
 		if err != nil {
-			browserErr = fmt.Errorf("launch browser: %w", err)
+			browserErr = fmt.Errorf("launch browser: %w", wrapLeaklessHint(err))
 			return
 		}
 		b := rod.New().ControlURL(ctrl)
@@ -103,14 +128,14 @@ func launchHeaded(ctx context.Context, slowMo time.Duration) (*rod.Browser, func
 	if err != nil {
 		return nil, nil, fmt.Errorf("provision browser: %w", err)
 	}
-	ctrl, err := launcher.New().
+	ctrl, err := newBrowserLauncher().
 		Bin(bin).
 		Headless(false).
 		Set("disable-dev-shm-usage").
 		Set("no-sandbox").
 		Launch()
 	if err != nil {
-		return nil, nil, fmt.Errorf("launch headed browser: %v — %s", err, HeadedUnavailableHint())
+		return nil, nil, fmt.Errorf("launch headed browser: %v — %s", wrapLeaklessHint(err), HeadedUnavailableHint())
 	}
 	b := rod.New().ControlURL(ctrl)
 	if slowMo > 0 {

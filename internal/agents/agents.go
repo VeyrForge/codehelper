@@ -54,7 +54,7 @@ re-query before grepping ("how does login work" → "auth session token middlewa
 | context then separate impact on the same symbol | context already includes blast_radius — skip redundant impact |
 | Multiple context calls before reading source | one context, or read_workspace_file when query already gave the path |
 
-**Key parameters:** context/impact → name · change_kit → target · trace → from + to · query → query (required) · project_context → verbosity=short (default) or detailed
+**Key parameters:** context → name · impact/change_kit → target · trace → from + to · query → query (required) · project_context → verbosity=short (default) or detailed
 
 ## Web & browser — verify the real page, not just the code
 

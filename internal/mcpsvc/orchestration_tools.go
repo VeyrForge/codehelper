@@ -2,7 +2,6 @@ package mcpsvc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -55,15 +54,16 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 		mcp.WithDescription("Enable, disable, or check local orchestration for this project. When enabled, use orchestrate for guided investigation workflows with tool trace memory and feedback/rerun loops."),
 		mcp.WithString("action", mcp.Required(), mcp.Description("enable | disable | status")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("orchestration", orchestrationControlHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestrate",
-		mcp.WithDescription("Run a guided local investigation workflow: classify task, execute a deterministic tool chain (query/context/impact/test_impact/etc.), return a context pack + compact tool trace + verification hints. Requires orchestration enabled."),
-		mcp.WithString("task", mcp.Required(), mcp.Description("What to investigate in natural language")),
+		mcp.WithDescription("Guided local investigation for LLM agents: classify task → deterministic tool chain → slim agent_brief + what_next + next_queries + compact trace. Default payload is token-lean TOON (omit answer_markdown/context_pack). Pass detail=true for the full pack; format=json for JSON. Requires orchestration enabled. PARAM: task=. On wrong workflow: orchestration_feedback then orchestration_rerun. Prefer kickoff for simple feature starts; orchestrate when you want a multi-tool chain + memory."),
+		mcp.WithString("task", mcp.Required(), mcp.Description("What to investigate in natural language (canonical key is task=, same as kickoff)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("format", mcp.Description("toon (default) | json")),
-		mcp.WithBoolean("detail", mcp.Description("When true, include full answer_markdown and context_pack (default false — slim agent_brief only)")),
+		mcp.WithBoolean("detail", mcp.Description("When true, include full answer_markdown and context_pack (default false — slim agent_brief + what_next + next_queries)")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("orchestrate", orchestrateHandler(regRef)))
 
@@ -82,11 +82,12 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	s.AddTool(mcp.NewTool("orchestration_feedback",
 		mcp.WithDescription("Store user correction for an orchestration run and update orchestration memory (feedback rules, avoid lists). Returns constraints for `orchestration_rerun` — use when orchestrate picked the wrong workflow."),
 		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id to correct")),
-		mcp.WithString("message", mcp.Required(), mcp.Description("What was wrong or what to focus on")),
+		mcp.WithString("message", mcp.Required(), mcp.Description("What was wrong or what to focus on (aliases: feedback, correction, note)")),
 		mcp.WithString("correction_type", mcp.Description("wrong_scope | wrong_symbol | missing_tests | other (default wrong_scope)")),
 		mcp.WithString("preferred_entities", mcp.Description("Comma-separated entities to prioritize next time")),
 		mcp.WithString("avoid_entities", mcp.Description("Comma-separated areas to avoid")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("toon (default) | json")),
 		annotTaskMutate(),
 	), timedTool("orchestration_feedback", orchestrationFeedbackHandler(regRef)))
 
@@ -94,6 +95,7 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 		mcp.WithDescription("Full orchestration run trace on demand: tool calls, arguments summaries, durations, and errors. Use after orchestrate when compact trace is not enough."),
 		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id from orchestrate")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("run_trace", runTraceHandler(regRef)))
 
@@ -101,14 +103,16 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 		mcp.WithDescription("Explain why an orchestration run chose its workflow and tool sequence, including feedback applied from prior runs. Use after `orchestrate` when the compact trace is not enough context."),
 		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("explain_run", explainRunHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestration_memory",
-		mcp.WithDescription("Search orchestration memory: feedback rules, negative memory, and workflow hints learned from prior runs. Use before `orchestrate`/`orchestration_rerun` to reuse project-specific routing constraints."),
+		mcp.WithDescription("Search orchestration memory: feedback rules, negative memory, and workflow hints learned from prior runs. Requires local orchestration enabled (separate from .codehelper/learning.json agent_memory). Use before `orchestrate`/`orchestration_rerun` to reuse project-specific routing constraints."),
 		mcp.WithString("query", mcp.Description("Search query")),
 		mcp.WithNumber("limit", mcp.Description("Max results"), mcp.DefaultNumber(8)),
 		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("orchestration_memory", orchestrationMemoryHandler(regRef)))
 }
@@ -116,6 +120,7 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 func orchestrationControlHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		format := resolveFormat(args)
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -147,10 +152,9 @@ func orchestrationControlHandler(reg *registry.Registry) server.ToolHandlerFunc 
 				"ready":  orchestrator.ResolveLocalChat() != nil,
 				"source": localLLMSource(),
 			},
-			"note": "Call orchestrate(task) for guided investigation when enabled. Local LLM (green engine / CODEHELPER_ENRICH_URL) improves routing when configured.",
+			"note": "Call orchestrate(task) for guided investigation when enabled. Local LLM (green engine / CODEHELPER_ENRICH_URL) improves routing when configured. orchestration_memory is separate from agent_memory (learning.json).",
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return mcp.NewToolResultText(string(b)), nil
+		return mustToolResultFormatted(out, format)
 	}
 }
 
@@ -164,9 +168,12 @@ func orchestrateHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err := requireOrchestrationEnabled(repo.RootPath); err != nil {
 			return orchestrationDisabledResult(), nil
 		}
-		task := strings.TrimSpace(argString(args, "task"))
+		task := strings.TrimSpace(argFirst(args, "task", "goal", "query", "q"))
 		if task == "" {
-			return mcp.NewToolResultError("task is required"), nil
+			return mcp.NewToolResultError(
+				"task is required — describe what to investigate in natural language. " +
+					"Expected: {\"task\":\"how does auth work\"}. Aliases accepted: goal, query, q.",
+			), nil
 		}
 		orch, cleanup, err := newOrchestrator(reg, repo)
 		if err != nil {
@@ -248,7 +255,7 @@ func orchestrationFeedbackHandler(reg *registry.Registry) server.ToolHandlerFunc
 		defer cleanup()
 		constraints, err := orch.Feedback(ctx, orchestrator.FeedbackInput{
 			RunID:             strings.TrimSpace(argString(args, "run_id")),
-			Message:           strings.TrimSpace(argString(args, "message")),
+			Message:           strings.TrimSpace(argFirst(args, "message", "feedback", "correction", "note")),
 			CorrectionType:    strings.TrimSpace(argString(args, "correction_type")),
 			PreferredEntities: splitCommaList(argString(args, "preferred_entities")),
 			AvoidEntities:     splitCommaList(argString(args, "avoid_entities")),
@@ -261,8 +268,7 @@ func orchestrationFeedbackHandler(reg *registry.Registry) server.ToolHandlerFunc
 			"constraints": constraints,
 			"next_step":   "Call orchestration_rerun with run_id and the returned constraints, or orchestrate with a refined task.",
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return mcp.NewToolResultText(string(b)), nil
+		return mustToolResultFormatted(out, resolveFormat(args))
 	}
 }
 
@@ -297,14 +303,14 @@ func runTraceHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		out := map[string]any{
 			"run": run, "tool_calls": calls, "feedback": fb,
 		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return mcp.NewToolResultText(string(b)), nil
+		return mustToolResultFormatted(out, resolveFormat(args))
 	}
 }
 
 func explainRunHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		format := resolveFormat(args)
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -325,13 +331,14 @@ func explainRunHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return mcp.NewToolResultText(text), nil
+		return mustToolResultFormatted(map[string]any{"run_id": runID, "explanation": text}, format)
 	}
 }
 
 func orchestrationMemoryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
+		format := resolveFormat(args)
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -349,9 +356,12 @@ func orchestrationMemoryHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		out := map[string]any{"memory": hits, "count": len(hits)}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return mcp.NewToolResultText(string(b)), nil
+		out := map[string]any{
+			"memory": hits, "count": len(hits),
+			"orchestration_enabled": true,
+			"note":                  "orchestration_memory is workflow routing memory (feedback/avoid). Project ADR memory is agent_memory + learning.json — separate gate.",
+		}
+		return mustToolResultFormatted(out, format)
 	}
 }
 

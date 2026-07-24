@@ -30,24 +30,82 @@ func TestAgentPayloadOmitsHeavyFieldsByDefault(t *testing.T) {
 	res := &Result{
 		RunID: "run1", Status: "complete", Workflow: WorkflowExplainCode, Intent: IntentExplain,
 		Confidence: 0.8, AgentBrief: "brief", AnswerMarkdown: "long markdown",
-		ContextPack: ContextPack{Files: []string{"a.go"}},
+		ContextPack: ContextPack{
+			Files:       []string{"a.go"},
+			Steps:       []string{"Extend Foo via change_kit target=Foo", "next: context name=Foo", "next: impact target=Foo"},
+			NextQueries: []string{"context name=Foo", "impact target=Foo"},
+		},
 	}
-	payload, ok := res.AgentPayload(false).(map[string]any)
+	payload, ok := res.AgentPayload(false).(SlimAgentPayload)
 	if !ok {
-		t.Fatal("expected map payload")
+		t.Fatalf("expected SlimAgentPayload, got %T", res.AgentPayload(false))
 	}
-	if _, ok := payload["answer_markdown"]; ok {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := asMap["answer_markdown"]; ok {
 		t.Fatal("answer_markdown should be omitted in slim payload")
 	}
-	if _, ok := payload["context_pack"]; ok {
+	if _, ok := asMap["context_pack"]; ok {
 		t.Fatal("context_pack should be omitted in slim payload")
 	}
-	if payload["agent_brief"] != "brief" {
+	if payload.AgentBrief != "brief" {
 		t.Fatal("agent_brief missing")
+	}
+	if payload.MCPParamKeys != AgentMCPParamKeys {
+		t.Fatalf("mcp_param_keys missing/wrong: %v", payload.MCPParamKeys)
+	}
+	if payload.WhatNext == "" {
+		t.Fatal("expected what_next in slim payload")
+	}
+	if len(payload.NextQueries) < 1 {
+		t.Fatalf("expected next_queries, got %v", payload.NextQueries)
+	}
+	if !strings.Contains(payload.Note, "detail=true") {
+		t.Fatalf("note should say detail=true, got %q", payload.Note)
+	}
+	if payload.RunID != "run1" {
+		t.Fatalf("run_id=%q", payload.RunID)
 	}
 	full := res.AgentPayload(true)
 	if _, ok := full.(*Result); !ok {
 		t.Fatal("full payload should be Result")
+	}
+}
+
+func TestSlimAgentPayloadTOONStartsWithRunID(t *testing.T) {
+	res := &Result{
+		RunID: "run_abc", Status: "complete", Workflow: WorkflowExplainCode, Intent: IntentExplain,
+		Confidence: 0.8, AgentBrief: "brief",
+		ContextPack: ContextPack{Steps: []string{"Do the thing"}},
+	}
+	// Import cycle avoided: encode via json then check key order from struct tags
+	b, err := json.Marshal(res.AgentPayload(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	idxRun := strings.Index(s, `"run_id"`)
+	idxBrief := strings.Index(s, `"agent_brief"`)
+	if idxRun < 0 || idxBrief < 0 || idxRun > idxBrief {
+		t.Fatalf("run_id should precede agent_brief in JSON/TOON stream: %s", s)
+	}
+}
+
+func TestBuildAgentBriefIncludesParamKeys(t *testing.T) {
+	brief := BuildAgentBrief("add health", Plan{Intent: IntentFeature, Workflow: WorkflowFeatureScope, Confidence: 0.8},
+		ContextPack{Symbols: []string{"Health"}, Steps: []string{"Extend Health", "next: change_kit target=Health"}},
+		nil, Constraints{}, TierFast)
+	if !strings.Contains(brief, "Param keys:") || !strings.Contains(brief, "change_kit→target") {
+		t.Fatalf("expected param keys in brief: %s", brief)
+	}
+	if !strings.Contains(brief, "context name=") {
+		t.Fatalf("expected context name= tip: %s", brief)
 	}
 }
 

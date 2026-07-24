@@ -33,11 +33,12 @@ func RegisterSymbolEditTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 	s.AddTool(mcp.NewTool("rename_symbol",
 		mcp.WithDescription("Preview-first, graph-driven rename of a symbol and its references (codehelper's heuristic answer to an LSP rename — no language server, no go/types). Resolves the definition via the symbol graph, collects graph-confirmed reference sites, and ALSO runs a word-boundary textual scan to catch references the graph missed, classifying every site as graph-confirmed (high confidence) or textual-only (unverified — may be a same-named field, comment, or string). Returns a per-file plan by default; pass apply=true to write graph-confirmed sites (and include_textual=true to also write textual-only ones). Not type-aware: review before applying."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Current symbol name (or sym: id) to rename")),
-		mcp.WithString("to", mcp.Required(), mcp.Description("New name")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Current symbol name (or sym: id) to rename (aliases: symbol, sym, target)")),
+		mcp.WithString("to", mcp.Required(), mcp.Description("New name (aliases: new_name, newName, rename_to)")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate when several symbols share the name")),
 		mcp.WithNumber("line", mcp.Description("Definition start line to disambiguate"), mcp.DefaultNumber(0)),
-		mcp.WithBoolean("apply", mcp.Description("Write the edits (default false — preview only)"), mcp.DefaultBool(false)),
+		mcp.WithBoolean("apply", mcp.Description("Write the edits (default false — preview only). dry_run=true also forces preview."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("dry_run", mcp.Description("Alias for preview-only (apply=false). Prefer omit apply."), mcp.DefaultBool(false)),
 		mcp.WithBoolean("include_textual", mcp.Description("When applying, also write textual-only (unverified) sites. Default false."), mcp.DefaultBool(false)),
 		mcp.WithString("repo", mcp.Description("Repository name (optional; defaults to current MCP workspace)")),
 		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
@@ -46,12 +47,13 @@ func RegisterSymbolEditTools(s *server.MCPServer, reg *registry.Registry) {
 
 	s.AddTool(mcp.NewTool("insert_at_symbol",
 		mcp.WithDescription("Insert a block of code relative to a symbol's definition, located via the symbol graph (no language server). position is before|after|start_of_body|end_of_body. Returns a preview with surrounding context by default; pass apply=true to write. Heuristic line ranges come from the index — review the preview before applying."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Symbol name (or sym: id) to anchor the insertion")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Symbol name (or sym: id) to anchor the insertion (aliases: symbol, sym, target)")),
 		mcp.WithString("position", mcp.Required(), mcp.Description("before | after | start_of_body | end_of_body (relative to the symbol's definition)")),
-		mcp.WithString("text", mcp.Required(), mcp.Description("Code to insert")),
+		mcp.WithString("text", mcp.Required(), mcp.Description("Code to insert (aliases: content, code, body)")),
 		mcp.WithString("path", mcp.Description("Definition file (relative to repo root) to disambiguate")),
 		mcp.WithNumber("line", mcp.Description("Definition start line to disambiguate"), mcp.DefaultNumber(0)),
-		mcp.WithBoolean("apply", mcp.Description("Write the edit (default false — preview only)"), mcp.DefaultBool(false)),
+		mcp.WithBoolean("apply", mcp.Description("Write the edit (default false — preview only). dry_run=true also forces preview."), mcp.DefaultBool(false)),
+		mcp.WithBoolean("dry_run", mcp.Description("Alias for preview-only (apply=false). Prefer omit apply."), mcp.DefaultBool(false)),
 		mcp.WithString("repo", mcp.Description("Repository name (optional; defaults to current MCP workspace)")),
 		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
 		annotWorkspaceWrite(),
@@ -133,13 +135,18 @@ type insertAtSymbolResponse struct {
 func renameSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
-		name := strings.TrimSpace(argString(args, "name"))
-		to := strings.TrimSpace(argString(args, "to"))
+		name := argFirst(args, "name", "symbol", "sym", "target")
+		to := argFirst(args, "to", "new_name", "newName", "rename_to")
 		if name == "" {
-			return mcp.NewToolResultError("name is required"), nil
+			return mcp.NewToolResultError(
+				"name is required — pass name=<CurrentSymbol> (aliases: symbol, sym, target).",
+			), nil
 		}
 		if to == "" {
-			return mcp.NewToolResultError("to (new name) is required"), nil
+			return mcp.NewToolResultError(
+				"to is required — pass to=<NewName> (aliases: new_name, newName, rename_to). " +
+					"Default is preview-only (omit apply, or apply=false / dry_run=true).",
+			), nil
 		}
 		if to == name {
 			return mcp.NewToolResultError("to must differ from name"), nil
@@ -267,6 +274,9 @@ func renameSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 		}
 
 		apply := argBool(args, "apply", false)
+		if argBool(args, "dry_run", false) {
+			apply = false
+		}
 		includeTextual := argBool(args, "include_textual", false)
 		if !apply {
 			// Cap preview payload so agents see the plan, not a 60KB dump.
@@ -354,14 +364,19 @@ func textualAppliedPhrase(included bool, n int) string {
 func insertAtSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
-		name := strings.TrimSpace(argString(args, "name"))
+		name := argFirst(args, "name", "symbol", "sym", "target")
 		position := strings.ToLower(strings.TrimSpace(argString(args, "position")))
-		text := argString(args, "text")
+		text := argFirst(args, "text", "content", "code", "body")
 		if name == "" {
-			return mcp.NewToolResultError("name is required"), nil
+			return mcp.NewToolResultError(
+				"name is required — pass name=<Symbol> (aliases: symbol, sym, target).",
+			), nil
 		}
 		if text == "" {
-			return mcp.NewToolResultError("text is required"), nil
+			return mcp.NewToolResultError(
+				"text is required — pass text=<code to insert> (aliases: content, code, body). " +
+					"Default is preview-only (omit apply, or apply=false / dry_run=true).",
+			), nil
 		}
 		switch position {
 		case "before", "after", "start_of_body", "end_of_body":
@@ -416,6 +431,9 @@ func insertAtSymbolHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			Preview:      preview,
 		}
 		apply := argBool(args, "apply", false)
+		if argBool(args, "dry_run", false) {
+			apply = false
+		}
 		if !apply {
 			out.Note = fmt.Sprintf("preview only — would insert before line %d in %s. Pass apply=true to write. %s",
 				insertBefore, def.Path, symbolEditHeuristicNote)

@@ -442,6 +442,14 @@ func TestResolvePatchHunks_AliasesAndUnifiedDiff(t *testing.T) {
 		t.Fatalf("edits alias: %#v err=%v", hunks, err)
 	}
 	hunks, err = resolvePatchHunks(map[string]any{
+		"hunks": []any{
+			map[string]any{"old_text": "x\n", "new_text": "y\n"},
+		},
+	})
+	if err != nil || len(hunks) != 1 || hunks[0].OldString != "x\n" || hunks[0].NewString != "y\n" {
+		t.Fatalf("old_text/new_text alias: %#v err=%v", hunks, err)
+	}
+	hunks, err = resolvePatchHunks(map[string]any{
 		"patch": "@@\n line-one\n-line-two\n+line-two-patched\n",
 	})
 	if err != nil {

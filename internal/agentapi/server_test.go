@@ -49,20 +49,24 @@ func TestHealthz(t *testing.T) {
 	api := newTestServer(t, upstream.URL, "")
 	defer api.Close()
 
-	res, err := http.Get(api.URL + "/healthz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", res.StatusCode)
-	}
-	var body map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body["ok"] != true || body["llm_ready"] != true {
-		t.Errorf("body = %v", body)
+	for _, path := range []string{"/healthz", "/ready"} {
+		res, err := http.Get(api.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusOK {
+			res.Body.Close()
+			t.Fatalf("%s status = %d", path, res.StatusCode)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			res.Body.Close()
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if body["ok"] != true || body["llm_ready"] != true {
+			t.Errorf("%s body = %v", path, body)
+		}
 	}
 }
 

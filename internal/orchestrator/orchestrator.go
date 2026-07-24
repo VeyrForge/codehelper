@@ -72,6 +72,7 @@ type ContextPack struct {
 	Verification   []string `json:"verification,omitempty"`
 	MissesPossible []string `json:"misses_possible,omitempty"`
 	Steps          []string `json:"steps,omitempty"`
+	NextQueries    []string `json:"next_queries,omitempty"` // copy-paste follow-ups for LLM agents
 	OrientLine     string   `json:"orient_line,omitempty"`
 	Decisions      []string `json:"decisions,omitempty"`
 	SourceExcerpts []string `json:"source_excerpts,omitempty"`
@@ -361,6 +362,18 @@ func extractLocations(tool, raw string) []string {
 			out = append(out, loc)
 		}
 	}
+	appendFindingLoc := func(m map[string]any) {
+		file, _ := m["file"].(string)
+		line, _ := m["line"].(float64)
+		if file == "" {
+			return
+		}
+		if line > 0 {
+			appendLoc(fmt.Sprintf("%s:%.0f", file, line))
+		} else {
+			appendLoc(file + ":1")
+		}
+	}
 	switch tool {
 	case "query":
 		if hits, ok := parsed["hits"].([]any); ok {
@@ -389,6 +402,39 @@ func extractLocations(tool, raw string) []string {
 				}
 				if m, ok := item.(map[string]any); ok {
 					appendLoc(symLoc(m))
+				}
+			}
+		}
+		if findings, ok := parsed["findings"].([]any); ok {
+			for i, item := range findings {
+				if i >= 8 {
+					break
+				}
+				if m, ok := item.(map[string]any); ok {
+					appendFindingLoc(m)
+				}
+			}
+		}
+	case "investigate":
+		if scan, ok := parsed["repo_sink_scan"].(map[string]any); ok {
+			if findings, ok := scan["findings"].([]any); ok {
+				for i, item := range findings {
+					if i >= 10 {
+						break
+					}
+					if m, ok := item.(map[string]any); ok {
+						appendFindingLoc(m)
+					}
+				}
+			}
+		}
+		if findings, ok := parsed["findings"].([]any); ok {
+			for i, item := range findings {
+				if i >= 8 {
+					break
+				}
+				if m, ok := item.(map[string]any); ok {
+					appendFindingLoc(m)
 				}
 			}
 		}
@@ -480,8 +526,12 @@ type judgeResult struct {
 
 func judgeAnswer(pack ContextPack, plan Plan, trace []CompactTrace) judgeResult {
 	var issues []string
-	if len(pack.Files) == 0 && len(pack.Symbols) == 0 {
-		issues = append(issues, "No files cited from query/context results")
+	if len(pack.Files) == 0 && len(pack.Symbols) == 0 && len(pack.Locations) == 0 {
+		if plan.Workflow == WorkflowSecurityReview {
+			issues = append(issues, "ABSTAIN: security_review found no grounded file:line sinks or symbols — do not invent vulns; pass a concrete module or re-run investigate recipe=security after edits")
+		} else {
+			issues = append(issues, "No files cited from query/context results")
+		}
 	}
 	hasTestImpact := false
 	for _, t := range trace {
@@ -544,6 +594,24 @@ func buildAnswerMarkdown(task string, plan Plan, pack ContextPack, trace []Compa
 				fmt.Fprintf(&b, "- %s\n", d)
 			}
 			b.WriteString("\n")
+		}
+	}
+	if plan.Workflow == WorkflowSecurityReview {
+		fmt.Fprintf(&b, "## Security review\n\n")
+		if locs := capStrings(pack.Locations, 10); len(locs) > 0 {
+			fmt.Fprintf(&b, "Grounded candidates (verify before treating as vulns):\n\n")
+			for _, loc := range locs {
+				fmt.Fprintf(&b, "- `%s`\n", loc)
+			}
+			b.WriteString("\n")
+		} else if len(pack.Files) > 0 {
+			fmt.Fprintf(&b, "Relevant files:\n\n")
+			for _, f := range pack.Files {
+				fmt.Fprintf(&b, "- %s\n", f)
+			}
+			b.WriteString("\n")
+		} else {
+			fmt.Fprintf(&b, "ABSTAIN: no grounded file:line sinks cited. Do not invent vulns.\n\n")
 		}
 	}
 	if len(pack.Files) > 0 {
@@ -773,12 +841,67 @@ func summarizeToolOutput(tool, raw string, callErr error) (summary, topSymbol st
 				}
 			}
 		}
+		if findings, ok := parsed["findings"].([]any); ok {
+			for i, item := range findings {
+				if i >= 8 {
+					break
+				}
+				if m, ok := item.(map[string]any); ok {
+					if f, _ := m["file"].(string); f != "" {
+						files = append(files, f)
+					}
+					if rule, _ := m["rule"].(string); rule != "" {
+						risks = append(risks, rule)
+					}
+				}
+			}
+			if len(findings) > 0 {
+				summary = fmt.Sprintf("Kickoff findings: %d grounded candidate(s)", len(findings))
+			}
+		}
 		if v, ok := parsed["verification"].([]any); ok {
 			for _, x := range v {
 				if s, ok := x.(string); ok {
 					verify = append(verify, s)
 				}
 			}
+		}
+	case "investigate":
+		summary = "Investigation bundle ready"
+		// Prefer repo_sink_scan findings (security recipe) so security_review cites files.
+		if scan, ok := parsed["repo_sink_scan"].(map[string]any); ok {
+			if findings, ok := scan["findings"].([]any); ok {
+				for i, item := range findings {
+					if i >= 10 {
+						break
+					}
+					if m, ok := item.(map[string]any); ok {
+						if f, _ := m["file"].(string); f != "" {
+							files = append(files, f)
+						}
+						if rule, _ := m["rule"].(string); rule != "" {
+							risks = append(risks, rule)
+						}
+					}
+				}
+				summary = fmt.Sprintf("Security sink scan: %d candidate(s)", len(findings))
+			}
+		}
+		// Nested steps may also carry findings / hits.
+		if findings, ok := parsed["findings"].([]any); ok {
+			for i, item := range findings {
+				if i >= 8 {
+					break
+				}
+				if m, ok := item.(map[string]any); ok {
+					if f, _ := m["file"].(string); f != "" {
+						files = append(files, f)
+					}
+				}
+			}
+		}
+		if note, _ := parsed["note"].(string); note != "" && summary == "Investigation bundle ready" {
+			summary = truncate(note, 160)
 		}
 	case "project_context":
 		if pt, _ := parsed["project_type"].(string); pt != "" {

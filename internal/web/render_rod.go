@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -49,7 +48,7 @@ func NewRodRenderer(poolSize int) *RodRenderer {
 
 func (r *RodRenderer) init() {
 	r.once.Do(func() {
-		u := launcher.New().
+		u := newBrowserLauncher().
 			Headless(true).
 			Set("disable-gpu").
 			Set("disable-dev-shm-usage").

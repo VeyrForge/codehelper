@@ -25,7 +25,8 @@ func initCmd() *cobra.Command {
 		Use:   "init [path]",
 		Short: "Initialize codehelper in any git repo (gitignore, index, watch daemon)",
 		Long: "Prepare a project directory for Codehelper from anywhere on your machine. " +
-			"Ensures `.codehelper/` is listed in `.gitignore` when that file exists, " +
+			"Ensures codehelper-generated local artifacts (`.codehelper/`, `CLAUDE.md`, " +
+			"`.cursor/`, `.claude/`) are listed in `.gitignore` when that file exists, " +
 			"runs `analyze` for the repo (or shard), and starts the watch daemon. " +
 			"Run once per clone; use `codehelper analyze --force` to rebuild the index.",
 		Args: cobra.MaximumNArgs(1),
@@ -48,7 +49,7 @@ func initCmd() *cobra.Command {
 			if added, err := gitutil.EnsureCodehelperGitignored(gitRoot); err != nil {
 				return err
 			} else if added {
-				fmt.Fprintln(os.Stderr, "init: appended .codehelper/ to .gitignore")
+				fmt.Fprintln(os.Stderr, "init: appended codehelper ignore entries to .gitignore")
 			}
 			if err := runAnalyze(cmd.Context(), root, analyzeFlags{force: force}); err != nil {
 				return err
@@ -70,7 +71,7 @@ func initCmd() *cobra.Command {
 			if !noMCP {
 				// Editor wiring is a convenience, not load-bearing for indexing —
 				// warn but don't fail init over any of these steps.
-				if written, err := setup.ProjectMCP(gitRoot, setup.ResolveBinary()); err != nil {
+				if written, err := setup.ProjectMCP(gitRoot, "codehelper"); err != nil {
 					fmt.Fprintln(os.Stderr, "init: MCP config:", err)
 				} else {
 					for _, p := range written {

@@ -4,7 +4,9 @@
 package agentapi
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -56,6 +58,7 @@ type toolCallRequest struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /ready", s.handleHealthz)
 	mux.HandleFunc("POST /v1/agent/chat", s.handleChat)
 	mux.HandleFunc("POST /v1/tools/call", s.handleToolCall)
 	s.registerTaskRoutes(mux)
@@ -66,6 +69,13 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if reqID == "" {
+			var b [8]byte
+			_, _ = rand.Read(b[:])
+			reqID = hex.EncodeToString(b[:])
+		}
+		w.Header().Set("X-Request-ID", reqID)
 		if s.Token != "" {
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) != 1 {
@@ -89,6 +99,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	llmCfg := s.activeLLMConfig()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 true,
+		"service":            "codehelper",
 		"version":            s.Version,
 		"default_repo":       s.DefaultRepo,
 		"llm_ready":          llmCfg.Ready(),

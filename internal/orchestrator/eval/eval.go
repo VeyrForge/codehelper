@@ -195,7 +195,7 @@ func (r *Runner) runManual(ctx context.Context, inv *orchestrator.MeteredInvoker
 	inv.Reset()
 	chain := manualChainForKind(task.Kind)
 	start := time.Now()
-	text, tools := runToolChain(ctx, inv, h, repo.Name, task.Task, chain, r.effectiveManualFormat())
+	text, tools := runToolChain(ctx, inv, h, repo.Name, task.Task, task.Kind, chain, r.effectiveManualFormat())
 	ms := time.Since(start).Milliseconds()
 	ar := scoreArm(task, text, inv.Last, int(ms), len(tools))
 	ar.Mode = ModeManualMCP

@@ -63,7 +63,8 @@ func CommandBlockedWithPolicy(argv []string, pol BlockPolicy) (bool, string) {
 	// Shell-operator / command-substitution detection across every token.
 	for _, tok := range argv {
 		if shellOperatorTokens[strings.TrimSpace(tok)] {
-			return true, "shell operator " + strings.TrimSpace(tok) + " is not supported in argv mode (no shell); run commands separately"
+			return true, "shell operator " + strings.TrimSpace(tok) +
+				" is not supported in argv mode (no shell). Hint: pass a single argv command (e.g. \"go test ./...\"); for pipes/&& set exec_mode=shell (opt-in), or split into separate lint_cmd/build_cmd/test_cmd calls"
 		}
 		if strings.ContainsAny(tok, "`\n") || strings.Contains(tok, "$(") {
 			return true, "command substitution / control characters are not allowed"

@@ -139,7 +139,8 @@ func Run(ctx context.Context, req Request) (*Result, error) {
 		res.Abstain = true
 		res.Accepted = false
 		res.Confidence = 0.0
-		res.Reasons = append(res.Reasons, "abstain: no lint/build/test signal")
+		res.Reasons = append(res.Reasons,
+			"abstain: no lint/build/test signal — pass lint_cmd/build_cmd/test_cmd as plain argv strings (e.g. \"go test ./...\", no pipes); or use SuggestedVerifyCommands from project_context / project profile. For pipes/&& set exec_mode=shell (opt-in).")
 		return res, nil
 	}
 	present := 0.0

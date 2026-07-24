@@ -4,11 +4,42 @@
 
 ### Remaining OPEN / residual ceilings
 
-
-- Express library APIs remain self-only inbound (OSS-bed sparsity).
-- Nest monorepo is sample-only (canonical pick is a heuristic).
+- Express library APIs remain self-only inbound on sparse trees.
+- Nest monorepo sample-only DI still needs canonical-pick heuristics.
 - PHP/Ruby symref still thinner than Go/TS on ambiguous names.
 - Godot `_ready` / Unity addon ambiguity at scale.
+
+## 3.0.2
+
+### Added
+
+- **Agent recovery** — structured `recovery_hint` / `error_category` on miss
+  paths; `recommended_next_tools` on kickoff / investigate / plan / scout /
+  change_kit / orchestrate / apply_patch.
+- **Dataflow-lite security findings** — shape-aware scanning and HTTP-surface
+  enrichment with fewer false positives.
+- **LLM param aliases** — common aliases on rename / insert / orchestrate /
+  patch / docs / orchestration feedback tools.
+- **Sparse-graph honesty** — call-graph confidence signals so empty fanout is
+  not treated as isolation proof.
+- **MCP discovery packaging** — registry metadata, Glama/Smithery polish,
+  SPDX + Dockerfile improvements.
+- **Portable init** — ignore generated local artifacts; keep `.mcp.json`
+  portable across machines.
+
+### Fixed
+
+- **Role-aware vibe abstain** — feature/perf guidance no longer reuses
+  security “exploit path” copy on ordinary misses.
+- **Healthish symbol misses** — bare `health`/`ready` steer to `change_kit`
+  with recovery hints instead of bare `symbol not found`.
+- **Edit → verify → finish_check** — Windows argv verify, quieter dirty-tree
+  review noise, clearer finish-gate recovery.
+- **Auth reuse ranking** — demote KeepAlive / path false friends.
+- **Nested foreign-tool demotion** — nested tool trees no longer crowd
+  production ranking.
+- Stale working-tree index actions now suggest `analyze --force`.
+- Local rod browser builds and Windows MCP gaps hardened.
 
 ## 3.0.1
 
@@ -121,9 +152,9 @@
 
 ## Version index
 
-Releases from **3.0.1** through **1.1.0** (newest first):
+Releases from **3.0.2** through **1.1.0** (newest first):
 
-**3.0.1** · **3.0.0** · **2.59.0** · **2.58.0** · **2.57.0** · **2.56.0** · **2.55.0**
+**3.0.2** · **3.0.1** · **3.0.0** · **2.59.0** · **2.58.0** · **2.57.0** · **2.56.0** · **2.55.0**
 **2.54.0** · **2.53.0** · **2.52.0** · **2.51.0** · **2.50.0** · **2.49.0**
 **2.48.0** · **2.47.0** · **2.46.0** · **2.45.0** · **2.44.0** · **2.43.0**
 **2.42.18** · **2.42.17** · **2.42.16** · **2.42.15** · **2.42.14** · **2.42.13**

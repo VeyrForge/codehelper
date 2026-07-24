@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -167,5 +168,50 @@ func TestStoreRunAndTrace(t *testing.T) {
 	calls, err := st.ListToolCalls(ctx, runID)
 	if err != nil || len(calls) != 1 {
 		t.Fatalf("calls: %+v err=%v", calls, err)
+	}
+}
+
+func TestExtractLocationsInvestigate(t *testing.T) {
+	raw := `{"recipe":"security","repo_sink_scan":{"findings":[{"file":"src/acl.c","line":42,"rule":"c-unsafe-buffer"},{"file":"lib/response.js","line":10,"rule":"library-redirect"}]}}`
+	locs := extractLocations("investigate", raw)
+	if len(locs) < 2 {
+		t.Fatalf("expected investigate sink locations, got %v", locs)
+	}
+	if locs[0] != "src/acl.c:42" {
+		t.Fatalf("got %v", locs)
+	}
+}
+
+func TestJudgeAnswerSecurityAbstain(t *testing.T) {
+	j := judgeAnswer(ContextPack{}, Plan{Workflow: WorkflowSecurityReview}, nil)
+	if j.Pass {
+		t.Fatal("expected fail/abstain when no files")
+	}
+	if len(j.Issues) == 0 || !strings.Contains(j.Issues[0], "ABSTAIN") {
+		t.Fatalf("expected ABSTAIN issue, got %v", j.Issues)
+	}
+}
+
+func TestSecurityReviewKickoffIncludesFindingsSection(t *testing.T) {
+	steps := WorkflowSteps(WorkflowSecurityReview)
+	found := false
+	for _, s := range steps {
+		if s.Tool != "kickoff" {
+			continue
+		}
+		sec, _ := s.Args["sections"].(string)
+		if strings.Contains(sec, "findings") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("security_review kickoff must include findings in sections")
+	}
+}
+
+func TestBuildAgentBriefSecurityAbstain(t *testing.T) {
+	brief := BuildAgentBrief("security review", Plan{Workflow: WorkflowSecurityReview, Intent: IntentSecurity}, ContextPack{}, nil, Constraints{}, TierFast)
+	if !strings.Contains(brief, "ABSTAIN") {
+		t.Fatalf("expected ABSTAIN in brief, got %s", brief)
 	}
 }

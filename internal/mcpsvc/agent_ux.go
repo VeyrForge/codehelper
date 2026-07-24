@@ -25,6 +25,12 @@ func demoteFixtureHits(hits []retrieval.RankedSymbol) (out []retrieval.RankedSym
 	dominant := dominantDuplicatedName(hits)
 	var exactProd, exactFixture, primary, noise []retrieval.RankedSymbol
 	for _, h := range hits {
+		// Nested foreign codehelper checkouts must never win exact-name protection —
+		// stale indexes still surface vscode-extension session helpers above host auth.
+		if review.IsNestedForeignToolTree(h.Symbol.Path) {
+			noise = append(noise, h)
+			continue
+		}
 		exact := isExactNameHit(h, dominant)
 		noisePath := isReuseNoisePath(h.Symbol.Path)
 		switch {

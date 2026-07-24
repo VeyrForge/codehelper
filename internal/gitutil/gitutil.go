@@ -3,6 +3,7 @@ package gitutil
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -49,15 +50,27 @@ func HeadCommit(repoRoot string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-// IsGitRepo returns true if .git exists under root.
+// IsGitRepo returns true if root itself is a git work-tree root (has a .git
+// entry, or `rev-parse --show-toplevel` equals root). Subdirectories of a
+// larger work tree return false — use FindGitRoot to walk up. This avoids
+// false positives when $HOME is itself a git repo and temp dirs live under it.
 func IsGitRepo(root string) bool {
-	cmd := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+		return true // directory or gitfile; covers unborn (git init, no commits)
+	}
+	cmd := exec.Command("git", "-C", abs, "rev-parse", "--show-toplevel")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return false
 	}
-	return strings.TrimSpace(out.String()) == "true"
+	top := filepath.Clean(filepath.FromSlash(strings.TrimSpace(out.String())))
+	return strings.EqualFold(top, abs)
 }
 
 // UntrackedFiles lists files git is not tracking and that are not gitignored
@@ -100,10 +113,28 @@ func ChangedFiles(repoRoot string) ([]string, error) {
 
 // DiffNameStatus returns changed files with status (for detect_changes).
 // DiffAgainst lists files changed between baseRef and the working tree (including staged).
+// When baseRef does not resolve (single-commit clones, broken HEAD~N), it falls back to
+// HEAD so uncommitted edits still surface instead of a hard "exit status 128".
 func DiffAgainst(repoRoot, baseRef string) ([]string, error) {
 	if err := validateRef(baseRef); err != nil {
 		return nil, err
 	}
+	lines, err := diffNameOnly(repoRoot, baseRef)
+	if err != nil && baseRef != "HEAD" && !refResolves(repoRoot, baseRef) {
+		return diffNameOnly(repoRoot, "HEAD")
+	}
+	return lines, err
+}
+
+func refResolves(repoRoot, ref string) bool {
+	if err := validateRef(ref); err != nil {
+		return false
+	}
+	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
+}
+
+func diffNameOnly(repoRoot, baseRef string) ([]string, error) {
 	cmd := exec.Command("git", "-C", repoRoot, "diff", "--name-only", baseRef)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -161,6 +192,14 @@ func DiffNameStatus(repoRoot string, baseRef string) ([]string, error) {
 	if err := validateRef(baseRef); err != nil {
 		return nil, err
 	}
+	lines, err := diffNameStatus(repoRoot, baseRef)
+	if err != nil && baseRef != "HEAD" && !refResolves(repoRoot, baseRef) {
+		return diffNameStatus(repoRoot, "HEAD")
+	}
+	return lines, err
+}
+
+func diffNameStatus(repoRoot, baseRef string) ([]string, error) {
 	cmd := exec.Command("git", "-C", repoRoot, "diff", "--name-status", baseRef)
 	var out bytes.Buffer
 	cmd.Stdout = &out

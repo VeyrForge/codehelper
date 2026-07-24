@@ -51,7 +51,7 @@ func Run(ctx context.Context, pathArg string, opt Options) error {
 		return err
 	}
 	if _, err := gitutil.EnsureCodehelperGitignored(gitRoot); err != nil {
-		slog.Warn("ensure .codehelper gitignore", "root", gitRoot, "err", err)
+		slog.Warn("ensure codehelper gitignore", "root", gitRoot, "err", err)
 	}
 	// Write the per-client tool-first rules up front — BEFORE the up-to-date early
 	// return — so every client learns to call the MCP tools even when the index is

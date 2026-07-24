@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/VeyrForge/codehelper/internal/indexer"
 	"github.com/VeyrForge/codehelper/internal/registry"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -18,10 +20,10 @@ func RegisterCompositeTools(s *server.MCPServer, reg *registry.Registry) {
 	h := coreToolHandlers(regRef)
 
 	s.AddTool(mcp.NewTool("investigate",
-		mcp.WithDescription("Fused investigation: by default query + context + impact + test_impact. Pass recipe=architecture|dead_code|security|perf for specialized audits (architect Q&A pack, dead_code candidates, review_diff security smells, or hotspots+impact). Returns a compact JSON bundle — replaces chained MCP calls."),
-		mcp.WithString("query", mcp.Description("What to find / investigate (required unless recipe=architecture|dead_code|security|perf or target is set)")),
+		mcp.WithDescription("Fused investigation: by default query + context + impact + test_impact. Pass recipe=architecture|dead_code|security|perf for specialized audits (architect Q&A pack, dead_code candidates, whole-repo security sink scan + review_diff, or hotspots+N+1 query pack+impact). Returns a compact TOON bundle by default (format=json for JSON) — replaces chained MCP calls."),
+		mcp.WithString("query", mcp.Description("What to find / investigate (required unless recipe=architecture|dead_code|security|perf or target is set; aliases: q, prompt)")),
 		mcp.WithString("recipe", mcp.Description("Optional audit recipe: architecture | dead_code | security | perf (aliases: architect, design, unused, vuln, performance)")),
-		mcp.WithString("target", mcp.Description("Optional symbol name or sym: id (skips query when set)")),
+		mcp.WithString("target", mcp.Description("Optional symbol name or sym: id (skips query when set; aliases: name, symbol, sym)")),
 		mcp.WithString("path", mcp.Description("Disambiguate target by definition file path")),
 		mcp.WithString("repo", mcp.Description("Repository name")),
 		mcp.WithString("format", mcp.Description("toon (default) | json")),
@@ -55,9 +57,9 @@ func investigateHandler(reg *registry.Registry, h map[string]server.ToolHandlerF
 		format := resolveFormat(args)
 		recipe := normalizeInvestigateRecipe(argString(args, "recipe"))
 		if recipe != "" {
-			return investigateRecipe(ctx, h, recipe, repoName, format, args)
+			return investigateRecipe(ctx, reg, h, recipe, repoName, format, args)
 		}
-		target := strings.TrimSpace(argFirst(args, "target", "name"))
+		target := strings.TrimSpace(argFirst(args, "target", "name", "symbol", "sym"))
 		pathHint := strings.TrimSpace(argString(args, "path"))
 		out := map[string]any{"steps": []string{}}
 		appendStep := func(name string, body any) {
@@ -66,7 +68,7 @@ func investigateHandler(reg *registry.Registry, h map[string]server.ToolHandlerF
 		}
 
 		if target == "" {
-			q := strings.TrimSpace(argString(args, "query"))
+			q := strings.TrimSpace(argFirst(args, "query", "q", "prompt"))
 			if q == "" {
 				return mcp.NewToolResultError("query is required when target/recipe is not set"), nil
 			}
@@ -114,6 +116,12 @@ func investigateHandler(reg *registry.Registry, h map[string]server.ToolHandlerF
 		}
 
 		out["target"] = target
+		out["next_queries"] = []string{
+			"context on " + target + " — read source + callers before editing",
+			"impact target=" + target + " direction=upstream — check blast radius",
+			"change_kit target=" + target + " — then diagnostics → review_diff → verify",
+		}
+		out["what_next"] = "Inspect `" + target + "` via `context`, then `impact` before any edit."
 		return mustToolResultFormatted(out, format)
 	}
 }
@@ -133,7 +141,7 @@ func normalizeInvestigateRecipe(raw string) string {
 	}
 }
 
-func investigateRecipe(ctx context.Context, h map[string]server.ToolHandlerFunc, recipe, repoName, format string, args map[string]any) (*mcp.CallToolResult, error) {
+func investigateRecipe(ctx context.Context, reg *registry.Registry, h map[string]server.ToolHandlerFunc, recipe, repoName, format string, args map[string]any) (*mcp.CallToolResult, error) {
 	out := map[string]any{"recipe": recipe, "steps": []string{}}
 	appendStep := func(name string, body any) {
 		out["steps"] = append(out["steps"].([]string), name)
@@ -186,6 +194,7 @@ func investigateRecipe(ctx context.Context, h map[string]server.ToolHandlerFunc,
 			}
 		}
 		out["note"] = "Architect mode: cite symbols/paths from kickoff+context+impact. Do not edit until the user accepts the design. If impact is self-only, retry a method target or direction=upstream."
+		attachInvestigateVibe(out, "architecture", nil, false)
 	case "dead_code":
 		if raw, err := callHandlerJSON(ctx, h, "dead_code", map[string]any{
 			"repo": repoName, "top_k": 20, "format": "json",
@@ -204,7 +213,28 @@ func investigateRecipe(ctx context.Context, h map[string]server.ToolHandlerFunc,
 			appendStep("query", jsonRaw(raw))
 		}
 		out["note"] = "Prefer confidence=high dead_code rows; confirm each with impact(upstream) + a name search before deleting."
+		attachInvestigateVibe(out, "dead_code", nil, false)
 	case "security":
+		// Whole-repo sink scan FIRST — clean trees must still surface candidates.
+		repo, rerr := resolveRepoInitialized(ctx, reg, repoName)
+		var sinkFindings []auditFinding
+		if rerr == nil {
+			sinkFindings = collectRepoSecurityFindings(repo.RootPath, 20)
+		}
+		if len(sinkFindings) > 0 {
+			sinkFindings = labelFrameworkFootguns(sinkFindings, security.DetectProjectShape(repo.RootPath))
+			appendStep("repo_sink_scan", map[string]any{
+				"findings": sinkFindings,
+				"count":    len(sinkFindings),
+				"note":     "Ranked sink/config candidates with severity, confidence, exploitability. Confirm before treating as confirmed vulns. kind=config_hardening is checklist-only. library_guidance = FRAMEWORK FOOTGUN (not an app CVE).",
+			})
+		} else {
+			out["repo_sink_scan"] = map[string]any{
+				"findings": []any{},
+				"note":     "No sink or config-hardening patterns matched in a bounded repo walk — not a clean bill of health. Pass a concrete module query or edit then re-run.",
+			}
+			out["steps"] = append(out["steps"].([]string), "repo_sink_scan")
+		}
 		if raw, err := callHandlerJSON(ctx, h, "review_diff", map[string]any{
 			"repo": repoName, "include_security": true, "format": "json",
 		}); err == nil {
@@ -217,39 +247,129 @@ func investigateRecipe(ctx context.Context, h map[string]server.ToolHandlerFunc,
 		}); err == nil {
 			appendStep("review", jsonRaw(raw))
 		}
-		out["note"] = "Address security_findings / high-severity smells (SQL concat, eval, secrets) before claiming done."
+		q := strings.TrimSpace(argFirst(args, "query", "target"))
+		if q == "" || isVagueSecurityQuery(q) {
+			for _, pq := range securityQueryPack()[:3] {
+				if raw, err := callHandlerJSON(ctx, h, "query", map[string]any{
+					"repo": repoName, "query": pq, "top_k": 5, "format": "json",
+				}); err == nil {
+					appendStep("query_pack:"+pq, jsonRaw(raw))
+					break // one pack query is enough signal; avoid payload bloat
+				}
+			}
+		} else if raw, err := callHandlerJSON(ctx, h, "query", map[string]any{
+			"repo": repoName, "query": q, "top_k": 8, "format": "json",
+		}); err == nil {
+			appendStep("query", jsonRaw(raw))
+		}
+		abstainSec := len(sinkFindings) == 0
+		if len(sinkFindings) > 0 {
+			out["note"] = fmt.Sprintf("Security recipe: %d repo sink candidate(s) plus review_diff/review. Prefer repo_sink_scan file:line over empty HEAD diffs. Demote CSS/DI/Schema false friends. Treat library_guidance as footguns, not CVEs.", len(sinkFindings))
+		} else {
+			out["note"] = "No high-signal app sinks ranked — that is an honest ABSTAIN, not an empty answer. Treat any library_guidance as footguns (not CVEs). Paste next_queries to hunt auth/SQL/XSS sinks."
+			out["abstain"] = "ABSTAIN — no confirmed app exploit path found (OK on frameworks/clean apps). Footguns ≠ CVEs. Paste next_queries."
+		}
+		attachInvestigateVibe(out, "security", sinkFindings, abstainSec)
 	case "perf":
+		var hotspotsRaw string
 		if raw, err := callHandlerJSON(ctx, h, "hotspots", map[string]any{
 			"repo": repoName, "top_k": 10, "format": "json",
 		}); err == nil {
+			hotspotsRaw = raw
 			appendStep("hotspots", jsonRaw(raw))
 		} else {
 			out["hotspots_error"] = err.Error()
 		}
-		q := strings.TrimSpace(argFirst(args, "query", "target"))
-		if q == "" {
-			q = "handler"
+		q := strings.TrimSpace(argFirst(args, "query", "target", "name", "symbol", "sym", "q"))
+		shape := security.ShapeApp
+		if repo, rerr := resolveRepoInitialized(ctx, reg, repoName); rerr == nil {
+			shape = security.DetectProjectShape(repo.RootPath)
 		}
-		if raw, err := callHandlerJSON(ctx, h, "query", map[string]any{
-			"repo": repoName, "query": q, "top_k": 5, "format": "json",
-		}); err == nil {
-			appendStep("query", jsonRaw(raw))
-			if id := firstSymbolIDFromJSON(raw); id != "" {
-				if raw2, err2 := callHandlerJSON(ctx, h, "impact", map[string]any{
-					"repo": repoName, "target": id, "direction": "upstream", "depth": 2, "format": "json",
-				}); err2 == nil {
-					appendStep("impact", jsonRaw(raw2))
+		pack := perfQueryPack()
+		if shape == security.ShapeLibrary || shape == security.ShapeFrameworkCore {
+			pack = perfQueryPackLibrary()
+		}
+		ranPack := false
+		if q == "" || isVaguePerfQuery(q) {
+			for _, pq := range pack {
+				if len(pq) == 0 {
+					continue
 				}
-				if raw2, err2 := callHandlerJSON(ctx, h, "test_impact", map[string]any{
-					"repo": repoName, "target": id, "format": "json",
-				}); err2 == nil {
-					appendStep("test_impact", jsonRaw(raw2))
+				if raw, err := callHandlerJSON(ctx, h, "query", map[string]any{
+					"repo": repoName, "query": pq, "top_k": 5, "format": "json",
+				}); err == nil {
+					appendStep("query_pack:"+pq, jsonRaw(raw))
+					ranPack = true
+					if id := firstSymbolIDFromJSON(raw); id != "" {
+						q = id // use for impact below
+					} else if n := firstSymbolFromJSON(raw); n != "" {
+						q = n
+					}
+					break // one pack query is enough signal
+				}
+			}
+			if q == "" || isVaguePerfQuery(q) {
+				q = "n+1 prefetch select_related"
+			}
+		}
+		if !ranPack {
+			if raw, err := callHandlerJSON(ctx, h, "query", map[string]any{
+				"repo": repoName, "query": q, "top_k": 5, "format": "json",
+			}); err == nil {
+				appendStep("query", jsonRaw(raw))
+				if id := firstSymbolIDFromJSON(raw); id != "" {
+					q = id
+				} else if n := firstSymbolFromJSON(raw); n != "" {
+					q = n
 				}
 			}
 		}
-		out["note"] = "Optimize hotspots files (churn × centrality) only after impact/test_impact; measure before/after."
+		impactTarget := q
+		if id := firstHotspotSuggestedTarget(hotspotsRaw); id != "" && (impactTarget == "" || isVaguePerfQuery(impactTarget)) {
+			impactTarget = id
+		}
+		if impactTarget != "" && !isVaguePerfQuery(impactTarget) {
+			if raw2, err2 := callHandlerJSON(ctx, h, "impact", map[string]any{
+				"repo": repoName, "target": impactTarget, "direction": "upstream", "depth": 2, "format": "json",
+			}); err2 == nil {
+				appendStep("impact", jsonRaw(raw2))
+			}
+			if raw2, err2 := callHandlerJSON(ctx, h, "test_impact", map[string]any{
+				"repo": repoName, "target": impactTarget, "format": "json",
+			}); err2 == nil {
+				appendStep("test_impact", jsonRaw(raw2))
+			}
+		}
+		out["note"] = "Optimize hotspots files (churn × centrality) and N+1/hot-path query_pack hits only after impact/test_impact; measure before/after. On sparse graphs, do not trust empty blast_radius. Read why + rewrite_hint on each hotspot row."
+		out["perf_query_pack"] = pack[:min(4, len(pack))]
+		attachInvestigateVibe(out, "performance", nil, false)
 	}
 	return mustToolResultFormatted(out, format)
+}
+
+// attachInvestigateVibe adds the Cursor-agent vibe contract (what_next + next_queries)
+// so investigate recipes match kickoff/plan/scout response shape.
+func attachInvestigateVibe(out map[string]any, role string, findings []auditFinding, abstain bool) {
+	shape := security.ShapeApp
+	vibeRole := role
+	switch role {
+	case "architecture", "dead_code":
+		vibeRole = "feature"
+	case "perf":
+		vibeRole = "performance"
+	}
+	next := vibeNextQueries(vibeRole, shape, abstain, role, "")
+	abstainNote := ""
+	if abstain {
+		if s, _ := out["abstain"].(string); s != "" {
+			abstainNote = s
+		} else {
+			abstainNote = "ABSTAIN"
+		}
+	}
+	out["next_queries"] = next
+	out["what_next"] = buildWhatNext(vibeRole, nil, findings, abstainNote, next)
+	out["recommended_next_tools"] = vibeRecommendedTools(vibeRole, nil, abstain)
 }
 
 func editCycleHandler(reg *registry.Registry, h map[string]server.ToolHandlerFunc) server.ToolHandlerFunc {
@@ -395,4 +515,33 @@ func firstSymbolIDFromJSON(raw string) string {
 	h0, _ := hits[0].(map[string]any)
 	id, _ := h0["id"].(string)
 	return id
+}
+
+// firstHotspotSuggestedTarget pulls a usable impact/query target from a hotspots
+// JSON payload (suggested_next_query, or basename of the top file).
+func firstHotspotSuggestedTarget(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var p map[string]any
+	if json.Unmarshal([]byte(raw), &p) != nil {
+		return ""
+	}
+	rows, _ := p["hotspots"].([]any)
+	if len(rows) == 0 {
+		return ""
+	}
+	h0, _ := rows[0].(map[string]any)
+	if q, _ := h0["suggested_next_query"].(string); strings.TrimSpace(q) != "" {
+		return strings.TrimSpace(q)
+	}
+	if f, _ := h0["file"].(string); strings.TrimSpace(f) != "" {
+		base := f
+		if i := strings.LastIndexAny(f, `/\`); i >= 0 {
+			base = f[i+1:]
+		}
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+		return base
+	}
+	return ""
 }

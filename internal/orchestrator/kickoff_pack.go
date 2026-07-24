@@ -116,6 +116,50 @@ func enrichPackFromKickoff(raw string, pack *ContextPack) string {
 			}
 		}
 	}
+	if findings, ok := k["findings"].([]any); ok {
+		for i, item := range findings {
+			if i >= 10 {
+				break
+			}
+			m, _ := item.(map[string]any)
+			file, _ := m["file"].(string)
+			if file == "" {
+				continue
+			}
+			line, _ := m["line"].(float64)
+			loc := file
+			if line > 0 {
+				loc = fmt.Sprintf("%s:%.0f", file, line)
+			}
+			pack.Locations = uniqueAppend(pack.Locations, loc)
+			pack.Files = uniqueAppend(pack.Files, file)
+			if rule, _ := m["rule"].(string); rule != "" {
+				pack.Risks = uniqueAppend(pack.Risks, rule)
+			}
+		}
+		if len(findings) > 0 {
+			pack.Snippets = append(pack.Snippets, fmt.Sprintf("security findings: %d grounded candidate(s)", len(findings)))
+		}
+	}
+	if abstain, _ := k["abstain"].(string); abstain != "" {
+		pack.MissesPossible = uniqueAppend(pack.MissesPossible, abstain)
+		pack.Snippets = append(pack.Snippets, "abstain: "+truncate(abstain, 160))
+	}
+	if wn, _ := k["what_next"].(string); wn != "" {
+		pack.Steps = append([]string{wn}, pack.Steps...)
+		pack.Snippets = append(pack.Snippets, "what_next: "+truncate(wn, 140))
+	}
+	if nq, ok := k["next_queries"].([]any); ok {
+		for i, q := range nq {
+			if i >= 3 {
+				break
+			}
+			if s, ok := q.(string); ok && s != "" {
+				pack.NextQueries = uniqueAppend(pack.NextQueries, s)
+				pack.Steps = uniqueAppend(pack.Steps, "next: "+s)
+			}
+		}
+	}
 	if note, _ := k["note"].(string); note != "" {
 		pack.Snippets = append(pack.Snippets, "kickoff: "+truncate(note, 180))
 	}

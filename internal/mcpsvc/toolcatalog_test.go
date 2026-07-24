@@ -2,6 +2,7 @@ package mcpsvc
 
 import (
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,12 @@ func TestMCPToolCatalogComplete(t *testing.T) {
 	}
 	if brief.ParamKeys == "" || brief.ContractPath != "AGENTS.md" {
 		t.Fatalf("unexpected brief catalog: %+v", brief)
+	}
+	if !strings.Contains(brief.ParamKeys, "impact/change_kit→target") {
+		t.Fatalf("ParamKeys should teach impact/change_kit→target, got %q", brief.ParamKeys)
+	}
+	if strings.Contains(brief.ParamKeys, "impact→name") {
+		t.Fatalf("ParamKeys must not claim impact→name (schema uses target): %q", brief.ParamKeys)
 	}
 	full := MCPToolCatalogFull()
 	var grouped int

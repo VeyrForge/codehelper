@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/VeyrForge/codehelper/internal/daemon"
@@ -136,14 +137,21 @@ func attachActionRequired(r *Report) {
 		if r.StaleReason == "no index" {
 			code = "no_index"
 		}
+		// Working-tree drift needs --force so analyze rebuilds against uncommitted edits
+		// (HEAD-only lag can use plain analyze). Agents often miss this and keep stale hits.
+		cmd := []string{"codehelper", "analyze"}
+		reason := strings.ToLower(r.StaleReason)
+		if strings.Contains(reason, "working tree") || strings.Contains(reason, "uncommitted") {
+			cmd = []string{"codehelper", "analyze", "--force"}
+		}
 		ar := &ActionRequired{
 			Code:     code,
 			Message:  msg,
-			Commands: [][]string{{"codehelper", "analyze"}},
+			Commands: [][]string{cmd},
 		}
 		if r.WatchRunning && r.StaleReason != "no index" {
 			ar.Commands = nil
-			ar.Message = msg + "; watch daemon is running — wait for convergence or run codehelper analyze if stuck"
+			ar.Message = msg + "; watch daemon is running — wait for convergence or run codehelper analyze --force if stuck"
 		}
 		r.ActionRequired = ar
 		return

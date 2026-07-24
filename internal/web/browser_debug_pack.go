@@ -178,6 +178,7 @@ func WriteCaptureReport(reportPath string, res *BrowserResult) error {
 		"debug_pack_dir":  res.DebugPackDir,
 		"debug_pack_json": res.DebugPackJSON,
 		"action_log":      res.ActionLog,
+		"console":         res.Console,
 		"console_errors":  ConsoleErrorsOnly(res.Console),
 		"page_errors":     res.PageErrors,
 		"failed_requests": res.Failed,

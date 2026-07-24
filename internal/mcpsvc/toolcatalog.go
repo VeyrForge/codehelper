@@ -3,7 +3,8 @@ package mcpsvc
 import "sort"
 
 // MCPParamKeys is a one-line cheat sheet for the most-misused tool parameters.
-const MCPParamKeys = "context/context_bundle/impact→name · change_kit→target · trace→from+to · query/search_hybrid→query · kickoff→task · scope→idea"
+// Agents routinely confuse context.name with change_kit.target (and impact.target).
+const MCPParamKeys = "context/context_bundle→name · impact/change_kit→target · trace→from+to · query/search_hybrid→query · kickoff/orchestrate→task · investigate→query|recipe|target · rename_symbol→name+to · scope→idea · agent_memory→action"
 
 // MCPMainTools are the high-frequency tools agents should reach for first.
 var MCPMainTools = []string{

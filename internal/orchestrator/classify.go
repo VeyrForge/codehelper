@@ -260,9 +260,13 @@ func WorkflowSteps(wf Workflow) []workflowStep {
 		}
 	case WorkflowSecurityReview:
 		return []workflowStep{
-			{Tool: "detect_changes", Why: "Map changed symbols", Args: map[string]any{}},
-			{Tool: "review_diff", Why: "Line-level security/perf smells on the diff", Args: map[string]any{"include_security": true}},
-			{Tool: "review", Why: "Symbol blast-radius + security_findings", Args: map[string]any{}},
+			{Tool: "investigate", Why: "Whole-repo security sink scan with ranked file:line candidates", Args: map[string]any{
+				"recipe": "security",
+			}},
+			{Tool: "kickoff", Why: "Orient + grounded security findings mode", Args: map[string]any{
+				"role": "security", "sections": "orient,reuse,steps,decisions,verify,findings",
+			}},
+			{Tool: "review_diff", Why: "Line-level security/perf smells on the working tree diff (may be empty on clean HEAD)", Args: map[string]any{"include_security": true}},
 			{Tool: "diagnostics", Why: "Build/lint status", Args: map[string]any{}},
 		}
 	default:

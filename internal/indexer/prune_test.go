@@ -98,6 +98,30 @@ func TestCollectSkipsDefaultSkipDirs(t *testing.T) {
 	}
 }
 
+// TestWalkSourceFilesSkipsNestedCodehelperProduct prunes a nested foreign
+// codehelper checkout (discord_mod-style) while keeping host app sources.
+func TestWalkSourceFilesSkipsNestedCodehelperProduct(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "backend", "main.go"), "package main")
+	mustWrite(t, filepath.Join(root, "codehelper", "internal", "mcpsvc", "x.go"), "package mcpsvc")
+	mustWrite(t, filepath.Join(root, "cmd", "codehelper", "main.go"), "package main")
+
+	got, err := WalkSourceFiles(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "backend/main.go") {
+		t.Fatalf("expected host source, got %v", got)
+	}
+	if strings.Contains(joined, "codehelper/internal") {
+		t.Fatalf("nested codehelper product must be pruned: %v", got)
+	}
+	if !strings.Contains(joined, "cmd/codehelper/main.go") {
+		t.Fatalf("cmd/codehelper CLI package must remain: %v", got)
+	}
+}
+
 // TestWalkSourceFilesSkipsFrameworkCacheDirs verifies common bundler/framework
 // output trees (.turbo, .output, out, …) are pruned even when not gitignored.
 func TestWalkSourceFilesSkipsFrameworkCacheDirs(t *testing.T) {

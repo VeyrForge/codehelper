@@ -62,10 +62,17 @@ type impactMCPResponse struct {
 	Freshness            freshness.Report    `json:"freshness"`
 	Warning              string              `json:"warning,omitempty"`
 	Note                 string              `json:"note,omitempty"`
+	CallGraphConfidence  string              `json:"call_graph_confidence,omitempty"`
+	WhatNext             string              `json:"what_next,omitempty"`
 	RecommendedNextTools []string            `json:"recommended_next_tools,omitempty"`
 	Warnings             []string            `json:"warnings,omitempty"`
 	EvidencePaths        []string            `json:"evidence_paths,omitempty"`
 	Confidence           float64             `json:"confidence,omitempty"`
+	RecoveryHint         string              `json:"recovery_hint,omitempty"`
+	ErrorCategory        string              `json:"error_category,omitempty"`
+	IsRetryable          *bool               `json:"is_retryable,omitempty"`
+	SuggestedFix         string              `json:"suggested_fix,omitempty"`
+	WorkspaceWarning     string              `json:"workspace_warning,omitempty"`
 }
 
 // indexStatsBrief is a compact index footprint for bootstrap (from meta.json).
@@ -414,7 +421,7 @@ func enrichContextPackResponse(out *contextPackMCPResponse, hits []retrieval.Ran
 }
 
 func enrichImpactResponse(out *impactMCPResponse, res *types.ImpactResult) {
-	out.RecommendedNextTools = []string{"context", "detect_changes", "read_workspace_file"}
+	out.RecommendedNextTools = []string{"change_kit", "test_impact", "diagnostics", "context"}
 	if out.Freshness.Stale || out.Freshness.ActionRequired != nil {
 		out.RecommendedNextTools = append([]string{"project_context"}, out.RecommendedNextTools...)
 	}
@@ -424,6 +431,15 @@ func enrichImpactResponse(out *impactMCPResponse, res *types.ImpactResult) {
 			paths = append(paths, n.Path)
 		}
 		out.EvidencePaths = dedupePathsCap(paths, 12)
+		tgt := strings.TrimSpace(res.Target)
+		if tgt == "" {
+			out.WhatNext = "change_kit on the target — then apply_patch dry_run=true → diagnostics → verify"
+		} else {
+			out.WhatNext = fmt.Sprintf(
+				"If editing: change_kit target=%s — then apply_patch dry_run=true → diagnostics → verify",
+				tgt,
+			)
+		}
 	}
 	if out.Warning != "" {
 		out.Warnings = append(out.Warnings, out.Warning)
@@ -431,8 +447,23 @@ func enrichImpactResponse(out *impactMCPResponse, res *types.ImpactResult) {
 	if out.Freshness.Stale && out.Freshness.StaleReason != "" {
 		out.Warnings = append(out.Warnings, "stale index: "+out.Freshness.StaleReason)
 	}
-	out.Confidence = 0.8
-	if res != nil && len(res.Nodes) > 1 {
-		out.Confidence = 0.9
+	if out.CallGraphConfidence != "" {
+		out.Warnings = append(out.Warnings, "sparse call graph: risk_tier/dependents/blast_radius under-counted — NEVER treat empty blast_radius or 0 callers as isolation proof; confirm with tests + textual search")
+		out.Confidence = 0.45
+		if res != nil && (strings.EqualFold(res.RiskTier, "low") || len(res.Nodes) <= 1) {
+			sparseNote := "SPARSE CALL GRAPH — do NOT treat low risk_tier / 0 dependents / empty blast_radius as isolation proof. " + out.CallGraphConfidence
+			if out.Note == "" {
+				out.Note = sparseNote
+			} else if !strings.Contains(out.Note, "SPARSE") {
+				out.Note = sparseNote + " | " + out.Note
+			}
+		} else if out.Note == "" {
+			out.Note = "SPARSE CALL GRAPH — callers/dependents may be missing; " + out.CallGraphConfidence
+		}
+	} else {
+		out.Confidence = 0.8
+		if res != nil && len(res.Nodes) > 1 {
+			out.Confidence = 0.9
+		}
 	}
 }

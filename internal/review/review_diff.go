@@ -11,6 +11,12 @@ import (
 	"github.com/VeyrForge/codehelper/internal/security"
 )
 
+// pathHeuristicFileCap: when more files changed than this, skip path-name-only
+// heuristics (api/handler/auth path matches). Large dirty worktrees otherwise
+// emit critical/high contract+security walls that are noise for "I just edited
+// one file" agent sessions. Line-level smell scans still run.
+const pathHeuristicFileCap = 12
+
 type DiffRequest struct {
 	RepoRoot           string
 	RepoName           string
@@ -41,29 +47,44 @@ func ReviewDiff(ctx context.Context, st *graph.Store, req DiffRequest) (*ReviewR
 	}
 	findings := make([]Finding, 0, 16)
 	required := make([]string, 0, 8)
+	notes := make([]string, 0, 2)
+
+	// Path-name heuristics are cheap signals, not proof. Demote severity so they
+	// do not block finish_check on dirty trees; skip entirely when the diff is
+	// large (unrelated dirty worktree).
+	runPathHeuristics := len(files) <= pathHeuristicFileCap
+	if !runPathHeuristics {
+		notes = append(notes, fmt.Sprintf(
+			"path-heuristic findings suppressed (%d files > %d) — large/dirty tree; line-level security/perf scans still run. Pass base=HEAD (workdir only) or a narrower base, or set include_contracts/include_performance=false.",
+			len(files), pathHeuristicFileCap,
+		))
+	}
+
 	for _, f := range files {
 		p := strings.ToLower(filepath.ToSlash(f))
-		if req.IncludeContracts && (strings.Contains(p, "api") || strings.Contains(p, "public")) {
+		if runPathHeuristics && req.IncludeContracts && (strings.Contains(p, "api") || strings.Contains(p, "public")) {
 			findings = append(findings, Finding{
-				Severity: SeverityHigh, Category: "contract", File: f,
-				Message:      "Public-facing path changed; verify backward compatibility.",
-				SuggestedFix: "Run contract_guard and add a compatibility test.",
+				// Path-only: demoted from high — not line-proven contract breakage.
+				Severity: SeverityMedium, Category: "contract", File: f,
+				Message:      "path-heuristic: public/api-ish path changed; verify backward compatibility (not line-proven).",
+				SuggestedFix: "Run contract_guard and add a compatibility test, or ignore if the path name alone is misleading.",
 			})
-			required = append(required, "Run contract_guard for changed API/public symbols.")
+			required = append(required, "Consider contract_guard for changed API/public paths (path-heuristic).")
 		}
 		if req.IncludeTests && !IsTestPath(f) && IsCodeSourceFile(f) && !HasSiblingTestFile(req.RepoRoot, f) {
 			required = append(required, "Add/update regression tests for "+f)
 		}
-		if req.IncludePerformance && (strings.Contains(p, "handler") || strings.Contains(p, "controller")) {
+		if runPathHeuristics && req.IncludePerformance && (strings.Contains(p, "handler") || strings.Contains(p, "controller")) {
 			findings = append(findings, Finding{
-				Severity: SeverityMedium, Category: "performance", File: f,
-				Message: "Request-path file changed; check for N+1 and unbounded loops.",
+				Severity: SeverityLow, Category: "performance", File: f,
+				Message: "path-heuristic: request-path file changed; check for N+1 and unbounded loops (not line-proven).",
 			})
 		}
-		if req.IncludeSecurity && (strings.Contains(p, "auth") || strings.Contains(p, "login") || strings.Contains(p, "security")) {
+		if runPathHeuristics && req.IncludeSecurity && (strings.Contains(p, "auth") || strings.Contains(p, "login") || strings.Contains(p, "security")) {
 			findings = append(findings, Finding{
-				Severity: SeverityHigh, Category: "security", File: f,
-				Message:      "Security-sensitive file changed; confirm authz boundaries and scan for injection/secrets.",
+				// Path-only: demoted from high — agents were treating these as critical FPs.
+				Severity: SeverityMedium, Category: "security", File: f,
+				Message:      "path-heuristic: security-sensitive path changed; confirm authz boundaries (not a confirmed vuln).",
 				SuggestedFix: "Review added lines for SQL concat, eval, and hard-coded credentials.",
 			})
 		}
@@ -87,6 +108,9 @@ func ReviewDiff(ctx context.Context, st *graph.Store, req DiffRequest) (*ReviewR
 	findings = filterBySeverity(findings, req.SeverityFloor)
 	risk := RiskScore(findings)
 	summary := buildReviewSummary(files, findings, risk)
+	if len(notes) > 0 {
+		summary = strings.TrimSpace(summary + " " + strings.Join(notes, " "))
+	}
 	required = dedupe(required)
 	if hasSecurityRule(findings) {
 		required = append(required, "Address security findings (secrets/injection/eval) before merge.")

@@ -84,6 +84,16 @@ func TestGitIntegration(t *testing.T) {
 		t.Errorf("UntrackedFiles=%v want [new.go]", untracked)
 	}
 
+	// Single-commit bed: HEAD~1 does not resolve. DiffAgainst must fall back to
+	// HEAD (working-tree changes) instead of returning exit status 128.
+	vsParent, err := DiffAgainst(dir, "HEAD~1")
+	if err != nil {
+		t.Fatalf("DiffAgainst(HEAD~1) on single-commit repo: %v", err)
+	}
+	if len(vsParent) != 1 || vsParent[0] != "a.txt" {
+		t.Errorf("DiffAgainst(HEAD~1) fallback=%v want [a.txt]", vsParent)
+	}
+
 	// Non-git directory degrades cleanly (no panic, IsGitRepo=false).
 	if IsGitRepo(t.TempDir()) {
 		t.Error("IsGitRepo=true for a non-git directory")

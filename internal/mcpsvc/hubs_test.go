@@ -1,6 +1,7 @@
 package mcpsvc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/VeyrForge/codehelper/internal/graph"
@@ -81,6 +82,28 @@ func TestNormalizeInvestigateRecipe(t *testing.T) {
 		if got := normalizeInvestigateRecipe(in); got != want {
 			t.Errorf("normalizeInvestigateRecipe(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestAttachInvestigateVibe(t *testing.T) {
+	out := map[string]any{}
+	findings := []auditFinding{{
+		File: "app/auth.go", Line: 12, Rule: "authz-fail-open", Kind: "sink_candidate",
+	}}
+	attachInvestigateVibe(out, "security", findings, false)
+	wn, _ := out["what_next"].(string)
+	nq, _ := out["next_queries"].([]string)
+	if wn == "" || !strings.Contains(wn, "auth.go:12") {
+		t.Fatalf("what_next grounded cite missing: %q", wn)
+	}
+	if len(nq) != 3 {
+		t.Fatalf("want 3 next_queries, got %+v", nq)
+	}
+	out2 := map[string]any{"abstain": "ABSTAIN: no sinks"}
+	attachInvestigateVibe(out2, "security", nil, true)
+	wn2, _ := out2["what_next"].(string)
+	if !strings.Contains(wn2, "ABSTAIN") {
+		t.Fatalf("abstain what_next: %q", wn2)
 	}
 }
 

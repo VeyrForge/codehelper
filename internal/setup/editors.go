@@ -9,8 +9,8 @@ import (
 )
 
 // ResolveBinary returns an absolute path to the running codehelper binary when
-// possible so generated .mcp.json pins a specific install. Falls back to the
-// bare "codehelper" name for PATH lookup when the executable cannot be resolved.
+// possible. Use for local doctor/setup hints printed to the user — NOT for
+// writing repo-tracked .mcp.json (those must stay portable: "codehelper").
 func ResolveBinary() string {
 	exe, err := os.Executable()
 	if err != nil || strings.TrimSpace(exe) == "" {
@@ -34,15 +34,16 @@ func ResolveBinary() string {
 //
 // Each file is merged non-destructively: any other MCP servers already present
 // are preserved and only the "codehelper" entry is added or refreshed. binary is
-// the command clients should launch — prefer an absolute path from ResolveBinary
-// so nested workspaces do not pick up a stale PATH install. Returns the paths
-// actually written.
+// the command clients should launch. Empty defaults to the portable PATH name
+// "codehelper" so repo configs stay shareable (absolute paths are machine-local
+// and dirty git). Pass ResolveBinary() only for user-global configs. Returns the
+// paths actually written.
 func ProjectMCP(repoRoot, binary string) ([]string, error) {
 	if repoRoot == "" {
 		return nil, fmt.Errorf("project root is required")
 	}
 	if binary == "" {
-		binary = ResolveBinary()
+		binary = "codehelper"
 	}
 	targets := []string{
 		filepath.Join(repoRoot, ".mcp.json"),

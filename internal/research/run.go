@@ -85,6 +85,34 @@ func LearningEnabled(repoRoot string) bool {
 	return false
 }
 
+// LearningMode returns the project learning mode from learning.json ("approval"
+// or "auto"). Empty string when the file is missing or unreadable. Defaults to
+// "approval" when enabled but mode is omitted/unknown.
+func LearningMode(repoRoot string) string {
+	path := filepath.Join(paths.RepoIndexDir(repoRoot), "learning.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return ""
+	}
+	mode, _ := root["mode"].(string)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "auto":
+		return "auto"
+	case "approval", "":
+		if LearningEnabled(repoRoot) || root["enabled"] != nil || root["state"] != nil {
+			return "approval"
+		}
+		return ""
+	default:
+		return "approval"
+	}
+}
+
 // NetworkEnabled reports whether research network is allowed for repoRoot.
 func NetworkEnabled(repoRoot string) bool {
 	path := filepath.Join(paths.RepoIndexDir(repoRoot), "learning.json")

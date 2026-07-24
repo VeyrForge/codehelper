@@ -12,6 +12,7 @@ import (
 	"github.com/VeyrForge/codehelper/internal/registry"
 	"github.com/VeyrForge/codehelper/internal/retrieval"
 	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -34,6 +35,13 @@ type planResponse struct {
 	Considerations  []string         `json:"considerations"`
 	Steps           []string         `json:"steps"`
 	Verification    []string         `json:"verification,omitempty"`
+	Findings        []auditFinding   `json:"findings,omitempty"`
+	FindingsMode    string           `json:"findings_mode,omitempty"`
+	Abstain         string           `json:"abstain,omitempty"`
+	WhatNext             string           `json:"what_next,omitempty"`
+	NextQueries          []string         `json:"next_queries,omitempty"`
+	RecommendedNextTools []string         `json:"recommended_next_tools,omitempty"`
+	ProjectShape         string           `json:"project_shape,omitempty"`
 	Freshness       string           `json:"freshness,omitempty"`
 	Note            string           `json:"note"`
 }
@@ -46,9 +54,7 @@ func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("task is required — describe what you want to build/change/investigate in natural language."), nil
 		}
 		role := strings.ToLower(strings.TrimSpace(argString(args, "role")))
-		if role == "" {
-			role = "feature"
-		}
+		role = inferRoleFromTask(role, task)
 		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -75,6 +81,9 @@ func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		hits, _ = demoteFixtureHits(hits)
+		hits = demoteIntentMismatchedHits(task, hits)
+		// Security/perf: demote CSS/DI/Schema noise before framing reuse.
+		hits = filterAuditHits(hits, role)
 
 		out := planResponse{Task: task, Role: role}
 		for _, h := range hits {
@@ -86,6 +95,11 @@ func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
 				Callers:   callerCountOf(ctx, st, repo.Name, h.Symbol.ID),
 				Score:     round3(h.Score),
 			})
+		}
+		out.ReuseCandidates = dropStyleReuseCandidates(out.ReuseCandidates)
+		if role == "" || role == "feature" || role == "refactor" {
+			out.ReuseCandidates = preferFeatureReuse(out.ReuseCandidates, task)
+			out.ReuseCandidates = seedHealthRouteCandidates(repo.RootPath, out.ReuseCandidates, task)
 		}
 
 		var top *reuseCandidate
@@ -151,6 +165,43 @@ func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			out.Freshness = "index may be stale (" + fresh.StaleReason + ") — re-run analyze for accurate reuse/impact"
 		}
 		out.Note = "Architect scaffolding: it gathers what exists and frames the decisions; the reasoning is yours. Resolve the decision_points (ask the user when they're genuine choices), then follow the steps — using context/change_kit on chosen symbols and impact/test_impact before editing."
+
+		if role == "" || role == "feature" || role == "refactor" {
+			if note := featureEndpointAbstainNote(task, security.DetectProjectShape(repo.RootPath), repo.RootPath, out.ReuseCandidates); note != "" {
+				out.Abstain = note
+				out.Note = note + " " + out.Note
+				out.ReuseCandidates = clearNonHealthReuseForAbstain(out.ReuseCandidates, note)
+				if len(out.ReuseCandidates) == 0 {
+					top = nil
+					out.ImpactOfTop = nil
+				}
+			}
+		}
+
+		// role=security|performance: findings mode (grounded sinks) or clear abstain.
+		findings, mode, abstain := applyFindingsMode(role, repo.RootPath, task, &out.ReuseCandidates, &out.AlreadyExists, &out.Note, &out.Steps)
+		out.Findings, out.FindingsMode = findings, mode
+		if abstain != "" {
+			out.Abstain = abstain
+		}
+		shape := security.DetectProjectShape(repo.RootPath)
+		out.ProjectShape = string(shape)
+		// Refresh top/impact after findings-mode may have cleared reuse.
+		if len(out.ReuseCandidates) == 0 {
+			out.ImpactOfTop = nil
+			top = nil
+		} else {
+			top = &out.ReuseCandidates[0]
+		}
+		out.NextQueries = vibeNextQueries(role, shape, out.Abstain != "", task, repo.RootPath)
+		out.WhatNext = buildWhatNext(role, top, out.Findings, out.Abstain, out.NextQueries)
+		out.RecommendedNextTools = vibeRecommendedTools(role, top, out.Abstain != "")
+		// Simple vibe: drop decision bulk that scares juniors (setup tax analogue).
+		if shouldSuppressSetupTax(task, role) && (role == "" || role == "feature") {
+			out.DecisionPoints = nil
+			out.Considerations = nil
+		}
+
 		return mustToolResultFormatted(out, resolveFormat(args))
 	}
 }
@@ -274,6 +325,16 @@ func planSteps(role string, top *reuseCandidate) []string {
 			"Resolve decision_points and placement WITH the user — cite symbols/paths; do not edit yet.",
 			"Once accepted: `change_kit` → smallest patch → diagnostics → review_diff → verify → finish_check.",
 		}, steps...)
+	case "feature", "":
+		kit := "Run `scout` (or reuse kickoff hits) then `change_kit` on the chosen symbol BEFORE editing — source + callers + tests in one call."
+		if top != nil {
+			kit = fmt.Sprintf("Run `change_kit` target=%s BEFORE editing — source + every call site + covering tests in one call.", top.Name)
+		}
+		steps = append([]string{
+			kit,
+			"Smallest patch only (health/request-id style): extend existing handler/middleware/helper; do not add *_v2 duplicates.",
+			"After edit: diagnostics → review_diff → verify (argv) → finish_check — claim done only when can_claim_done=true.",
+		}, steps...)
 	case "performance":
 		steps = append(steps,
 			"Call `hotspots` to find churn×centrality files on the hot path before optimizing.",
@@ -292,7 +353,7 @@ func planSteps(role string, top *reuseCandidate) []string {
 // RegisterPlanTools registers the architect-mode planner.
 func RegisterPlanTools(s *server.MCPServer, reg *registry.Registry) {
 	s.AddTool(mcp.NewTool("plan",
-		mcp.WithDescription("Architect-mode planner: turn a task into a grounded plan BEFORE writing code — reuse candidates, blast radius, decision_points, role checklist, steps + verify cmds. role=architect = design Q&A (cite symbols; no edit until accepted; pairs with investigate recipe=architecture). Other roles: security|performance|refactor|feature (default). Prefer kickoff for the same pack plus orient/docs."),
+		mcp.WithDescription("Architect-mode planner: turn a task into a grounded plan BEFORE writing code — reuse candidates, blast radius, decision_points, role checklist, steps + verify cmds. role=security|performance switches to FINDINGS mode: grounded sink/hotspot candidates (or clear abstain) — never ranks CSS selectors, DI inject* helpers, or Schema migrations as audit targets. role=architect = design Q&A (cite symbols; no edit until accepted; pairs with investigate recipe=architecture). Other roles: refactor|feature (default). Prefer kickoff for the same pack plus orient/docs."),
 		mcp.WithString("task", mcp.Required(), mcp.Description("What you want to build/change/investigate, in natural language")),
 		mcp.WithString("role", mcp.Description("Expert lens: architect (design Q&A) | security | performance | refactor | feature (default)")),
 		mcp.WithString("repo", mcp.Description("Repository name")),

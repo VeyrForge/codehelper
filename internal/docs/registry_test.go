@@ -3,6 +3,7 @@ package docs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,56 @@ func TestResolveCargoCrateDerivation(t *testing.T) {
 	}
 }
 
+func TestPinVersionDocsRSAndPkgGoDev(t *testing.T) {
+	// Curated Rust crate: /latest/ → concrete semver.
+	tokio := Resolve("tokio", "1.40.0")
+	wantTokio := "https://docs.rs/tokio/1.40.0/tokio"
+	if tokio.DocBase != wantTokio {
+		t.Errorf("tokio DocBase=%q want %q", tokio.DocBase, wantTokio)
+	}
+	foundTokioHTML := false
+	for _, s := range tokio.Sources {
+		if s.Kind == "html" && s.URL == wantTokio {
+			foundTokioHTML = true
+		}
+		if strings.Contains(s.URL, "/latest/") {
+			t.Errorf("tokio source still uses /latest/: %q", s.URL)
+		}
+	}
+	if !foundTokioHTML {
+		t.Errorf("tokio sources=%+v missing html %q", tokio.Sources, wantTokio)
+	}
+
+	// Derived cargo crate with version.
+	crate := ResolveFull("some-crate", "0.2.1", "cargo", "")
+	wantCrate := "https://docs.rs/some-crate/0.2.1/some_crate"
+	if crate.DocBase != wantCrate {
+		t.Errorf("crate DocBase=%q want %q", crate.DocBase, wantCrate)
+	}
+
+	// Go module: append @vX.Y.Z (add leading v when missing).
+	cobra := Resolve("github.com/spf13/cobra", "1.8.1")
+	wantCobra := "https://pkg.go.dev/github.com/spf13/cobra@v1.8.1"
+	if cobra.DocBase != wantCobra {
+		t.Errorf("cobra DocBase=%q want %q", cobra.DocBase, wantCobra)
+	}
+	if len(cobra.Sources) == 0 || cobra.Sources[0].URL != wantCobra {
+		t.Errorf("cobra sources=%+v want %q", cobra.Sources, wantCobra)
+	}
+
+	// Already-versioned Go path must not double-append.
+	already := pinVersionURL("https://pkg.go.dev/github.com/spf13/cobra@v1.8.1", "1.9.0")
+	if already != "https://pkg.go.dev/github.com/spf13/cobra@v1.8.1" {
+		t.Errorf("already-pinned URL rewritten: %q", already)
+	}
+
+	// Non-registry hosts (e.g. react.dev) stay unchanged.
+	react := Resolve("react", "19.0.0")
+	if react.DocBase != "https://react.dev" {
+		t.Errorf("react DocBase should stay unversioned host, got %q", react.DocBase)
+	}
+}
+
 func TestResolveUnknownBareNameStillWorks(t *testing.T) {
 	r := Resolve("somerandomlib", "")
 	if r.Origin != "derived" {
@@ -92,9 +143,10 @@ func TestLoadOverridesMergeAndPrecedence(t *testing.T) {
 	overrideMu.Unlock()
 
 	// Point the global registry dir at a temp HOME and the project dir at a
-	// temp repo. HOME drives paths.RegistryDir().
+	// temp repo. HOME/USERPROFILE drive paths.RegistryDir() (UserHomeDir).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir prefers USERPROFILE
 	repo := t.TempDir()
 
 	globalDir := filepath.Join(home, ".codehelper")
@@ -144,6 +196,7 @@ func TestLoadOverridesBestEffort(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	repo := t.TempDir()
 	projDir := filepath.Join(repo, ".codehelper")
 	if err := os.MkdirAll(projDir, 0o755); err != nil {

@@ -70,7 +70,7 @@ func RegisterWorkspaceTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("write_workspace_file", writeWorkspaceFileHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("apply_patch_workspace_file",
-		mcp.WithDescription("Apply one or more search/replace hunks to an existing file. Preferred arg: hunks=[{old_string,new_string,replace_all?,exact?}]. Aliases accepted: edits/changes/replacements, or patch as the same array, or a small unified-diff string with context/-/+ lines. Each old_string must match the current file exactly once unless replace_all is true. If an exact match fails purely on whitespace/indentation (tabs vs spaces, trailing space) AND the snippet anchors to exactly one place, the patch is still applied — new_string is reindented to the file's real style and the response notes whitespace_adjusted. Exact matches also restyle new_string indent chars to the file's tab/space convention. Pass exact=true on a hunk to disable tolerant re-anchoring. Preserves untouched content verbatim. Returns a unified diff and revert_token."),
+		mcp.WithDescription("Apply one or more search/replace hunks to an existing file. SAFETY: prefer dry_run=true first to preview the unified diff, then re-call without dry_run to write. Preferred arg: hunks=[{old_string,new_string,replace_all?,exact?}]. Aliases accepted: edits/changes/replacements, or patch as the same array, or a small unified-diff string with context/-/+ lines. Each old_string must match the current file exactly once unless replace_all is true. If an exact match fails purely on whitespace/indentation (tabs vs spaces, trailing space) AND the snippet anchors to exactly one place, the patch is still applied — new_string is reindented to the file's real style and the response notes whitespace_adjusted. Exact matches also restyle new_string indent chars to the file's tab/space convention. Pass exact=true on a hunk to disable tolerant re-anchoring. Preserves untouched content verbatim. Returns a unified diff and revert_token."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Path relative to repo root")),
 		mcp.WithString("repo", mcp.Description("Repository name (optional; defaults to current MCP workspace)")),
 		mcp.WithArray("hunks", mcp.Description("Array of {old_string, new_string, replace_all?:bool, exact?:bool}. Applied in order. Aliases: edits, changes, replacements."), mcp.Items(map[string]any{
@@ -137,17 +137,19 @@ type writeWorkspaceFileResponse struct {
 }
 
 type applyPatchResponse struct {
-	Note               string `json:"note,omitempty"`
-	Path               string `json:"path"`
-	RepoRoot           string `json:"repo_root"`
-	BytesBefore        int    `json:"bytes_before"`
-	BytesAfter         int    `json:"bytes_after"`
-	HunksApplied       int    `json:"hunks_applied"`
-	WhitespaceAdjusted int    `json:"whitespace_adjusted,omitempty"`
-	RevertToken        string `json:"revert_token,omitempty"`
-	Diff               string `json:"diff"`
-	DiffElided         bool   `json:"diff_elided,omitempty"`
-	DryRun             bool   `json:"dry_run,omitempty"`
+	Note                 string   `json:"note,omitempty"`
+	Path                 string   `json:"path"`
+	RepoRoot             string   `json:"repo_root"`
+	BytesBefore          int      `json:"bytes_before"`
+	BytesAfter           int      `json:"bytes_after"`
+	HunksApplied         int      `json:"hunks_applied"`
+	WhitespaceAdjusted   int      `json:"whitespace_adjusted,omitempty"`
+	RevertToken          string   `json:"revert_token,omitempty"`
+	Diff                 string   `json:"diff"`
+	DiffElided           bool     `json:"diff_elided,omitempty"`
+	DryRun               bool     `json:"dry_run,omitempty"`
+	RecommendedNextTools []string `json:"recommended_next_tools,omitempty"`
+	WhatNext             string   `json:"what_next,omitempty"`
 }
 
 type revertResponse struct {
@@ -403,7 +405,20 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 		}
 		rawPath := argString(args, "path")
 		if strings.TrimSpace(rawPath) == "" {
-			return mcp.NewToolResultError("path is required"), nil
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       "path is required — relative path under the repo root for the file to patch",
+				Expected:      "{\"path\":\"src/foo.go\",\"hunks\":[{\"old_string\":\"…\",\"new_string\":\"…\"}]}",
+				Example: map[string]any{
+					"path":    "internal/foo.go",
+					"dry_run": true,
+					"hunks":   []any{map[string]any{"old_string": "old", "new_string": "new"}},
+				},
+				WhatNext:             "Retry apply_patch_workspace_file with path= from change_kit + hunks=[{old_string,new_string}]; prefer dry_run=true first",
+				RecommendedNextTools: []string{"change_kit", "read_workspace_file", "apply_patch_workspace_file"},
+			}), nil
 		}
 		rel, err := relativePathUnderRepo(repo.RootPath, rawPath)
 		if err != nil {
@@ -415,10 +430,31 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 
 		hunks, err := resolvePatchHunks(args)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       err.Error(),
+				Expected:      "hunks=[{old_string,new_string}] (aliases: edits, changes, replacements, or patch)",
+				Example: map[string]any{
+					"path":    filepath.ToSlash(rel),
+					"dry_run": true,
+					"hunks":   []any{map[string]any{"old_string": "exact text from file", "new_string": "replacement"}},
+				},
+				WhatNext:             "Retry with hunks=[{old_string,new_string}] copied from change_kit definition / read_workspace_file; dry_run=true first",
+				RecommendedNextTools: []string{"read_workspace_file", "change_kit", "apply_patch_workspace_file"},
+			}), nil
 		}
 		if len(hunks) == 0 {
-			return mcp.NewToolResultError("hunks must contain at least one entry"), nil
+			return toolResultRecoveryError(agentRecovery{
+				ErrorCategory: ErrCategoryValidation,
+				IsRetryable:   true,
+				RecoveryHint:  RecoveryCheckInput,
+				Message:       "hunks must contain at least one entry",
+				Expected:      "non-empty hunks array",
+				WhatNext:      "Pass at least one {old_string,new_string} hunk; prefer dry_run=true first",
+				RecommendedNextTools: []string{"change_kit", "apply_patch_workspace_file"},
+			}), nil
 		}
 		if len(hunks) > maxPatchHunks {
 			return mcp.NewToolResultError(fmt.Sprintf("too many hunks (max %d)", maxPatchHunks)), nil
@@ -446,6 +482,9 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 			if phe, ok := err.(*patchHunkError); ok {
 				payload := map[string]any{
 					"error":              phe.Error(),
+					"error_category":     ErrCategoryConflict,
+					"is_retryable":       true,
+					"recovery_hint":      RecoveryCheckInput,
 					"hunk_index":         phe.HunkIndex,
 					"reason":             phe.Reason,
 					"match_count":        phe.MatchCount,
@@ -453,6 +492,8 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 					"file_excerpt":       phe.FileExcerpt,
 					"hint":               phe.Hint,
 					"path":               filepath.ToSlash(rel),
+					"what_next":          "Re-read with read_workspace_file, copy old_string byte-for-byte (or add surrounding lines), retry with dry_run=true",
+					"recommended_next_tools": []string{"read_workspace_file", "apply_patch_workspace_file", "change_kit"},
 				}
 				if b, jerr := json.MarshalIndent(payload, "", "  "); jerr == nil {
 					return mcp.NewToolResultError(string(b)), nil
@@ -484,19 +525,31 @@ func applyPatchWorkspaceFileHandler(reg *registry.Registry) server.ToolHandlerFu
 		}
 
 		out := applyPatchResponse{
-			Path:         filepath.ToSlash(rel),
-			RepoRoot:     filepath.ToSlash(repo.RootPath),
-			BytesBefore:  len(prevBytes),
-			BytesAfter:   len(updated),
-			HunksApplied: applied,
-			RevertToken:  token,
-			Diff:         diff,
-			DiffElided:   elided,
-			DryRun:       dryRun,
+			Path:                 filepath.ToSlash(rel),
+			RepoRoot:             filepath.ToSlash(repo.RootPath),
+			BytesBefore:          len(prevBytes),
+			BytesAfter:           len(updated),
+			HunksApplied:         applied,
+			RevertToken:          token,
+			Diff:                 diff,
+			DiffElided:           elided,
+			DryRun:               dryRun,
+			RecommendedNextTools: []string{"diagnostics", "review_diff", "verify", "finish_check"},
+			WhatNext:             "Run diagnostics → review_diff → verify (argv cmds) → finish_check before claiming done.",
+		}
+		if dryRun {
+			out.RecommendedNextTools = []string{"apply_patch_workspace_file", "diagnostics", "review_diff", "verify"}
+			out.WhatNext = "Diff looks right? Re-call apply_patch_workspace_file with the same hunks and dry_run=false (or omit dry_run) to write, then diagnostics → verify."
+			out.Note = "dry_run=true — nothing written. Preview the diff, then apply for real."
 		}
 		if fuzzy > 0 {
 			out.WhitespaceAdjusted = fuzzy
-			out.Note = fmt.Sprintf("%d hunk(s) matched after normalizing whitespace/indentation; new text was reindented to the file's actual style. Verify the diff.", fuzzy)
+			fuzzyNote := fmt.Sprintf("%d hunk(s) matched after normalizing whitespace/indentation; new text was reindented to the file's actual style. Verify the diff.", fuzzy)
+			if out.Note != "" {
+				out.Note = out.Note + " " + fuzzyNote
+			} else {
+				out.Note = fuzzyNote
+			}
 		}
 		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
@@ -895,8 +948,10 @@ func decodeHunks(raw any) ([]patchHunk, error) {
 			return nil, fmt.Errorf("hunks[%d] must be an object", i)
 		}
 		h := patchHunk{
-			OldString:  firstMapString(m, "old_string", "old", "before", "search"),
-			NewString:  firstMapString(m, "new_string", "new", "after", "replace"),
+			// LLM clients often emit old_text/new_text (Cursor apply_patch style) or
+			// old/new; keep old_string/new_string canonical.
+			OldString:  firstMapString(m, "old_string", "old_text", "oldText", "old", "before", "search"),
+			NewString:  firstMapString(m, "new_string", "new_text", "newText", "new", "after", "replace"),
 			ReplaceAll: argMapBool(m, "replace_all", false) || argMapBool(m, "replaceAll", false),
 			Exact:      argMapBool(m, "exact", false),
 		}

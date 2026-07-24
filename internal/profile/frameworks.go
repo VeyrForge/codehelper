@@ -217,14 +217,15 @@ func detectFramework(repoRoot string, p *ProjectProfile, deps []Dependency) {
 
 	// --- Python ---
 	if has("requirements.txt") || has("pyproject.toml") || has("setup.py") || has("manage.py") {
+		pyName := strings.ToLower(pyProjectName(repoRoot))
 		switch {
-		case pyProjectName(repoRoot) == "djangorestframework" || depVer["pip:djangorestframework"] != "" || has("rest_framework"):
+		case pyName == "djangorestframework" || depVer["pip:djangorestframework"] != "" || has("rest_framework"):
 			set("django-rest-framework", "django", firstNonEmpty(depVer["pip:djangorestframework"], depVer["pip:django"], depVer["pip:Django"]))
-		case has("manage.py") || depVer["pip:django"] != "" || depVer["pip:Django"] != "":
+		case pyName == "django" || has("manage.py") || depVer["pip:django"] != "" || depVer["pip:Django"] != "" || has("django/__init__.py"):
 			set("django", "django", firstNonEmpty(depVer["pip:django"], depVer["pip:Django"]))
-		case depVer["pip:fastapi"] != "":
+		case pyName == "fastapi" || depVer["pip:fastapi"] != "":
 			set("fastapi", "fastapi", depVer["pip:fastapi"])
-		case depVer["pip:flask"] != "" || depVer["pip:Flask"] != "":
+		case pyName == "flask" || depVer["pip:flask"] != "" || depVer["pip:Flask"] != "":
 			set("flask", "flask", firstNonEmpty(depVer["pip:flask"], depVer["pip:Flask"]))
 		}
 	}

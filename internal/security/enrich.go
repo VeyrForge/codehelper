@@ -1,0 +1,318 @@
+package security
+
+import (
+	"sort"
+	"strings"
+)
+
+// EnrichAndRankFindings upgrades raw sink hits into audit-quality candidates:
+// severity rank, confidence, exploitability, and an explicit Kind so agents
+// never present config hardening as a confirmed CVE.
+func EnrichAndRankFindings(in []ContextFinding) []ContextFinding {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]ContextFinding, len(in))
+	copy(out, in)
+	for i := range out {
+		enrichOne(&out[i])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if sevRank(out[i].Severity) != sevRank(out[j].Severity) {
+			return sevRank(out[i].Severity) > sevRank(out[j].Severity)
+		}
+		if confRank(out[i].Confidence) != confRank(out[j].Confidence) {
+			return confRank(out[i].Confidence) > confRank(out[j].Confidence)
+		}
+		if out[i].File != out[j].File {
+			return out[i].File < out[j].File
+		}
+		return out[i].Line < out[j].Line
+	})
+	for i := range out {
+		out[i].Rank = i + 1
+		if out[i].Kind == "" {
+			out[i].Kind = "sink_candidate"
+		}
+	}
+	return out
+}
+
+func enrichOne(f *ContextFinding) {
+	if f.Kind == "" {
+		f.Kind = "sink_candidate"
+	}
+	rule := strings.ToLower(f.Rule)
+	file := strings.ToLower(strings.ReplaceAll(f.File, "\\", "/"))
+	ev := strings.ToLower(f.Evidence)
+	switch {
+	case strings.HasPrefix(rule, "config-") || f.Kind == "config_hardening":
+		f.Kind = "config_hardening"
+		if f.Confidence == "" {
+			f.Confidence = "medium"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "config-only"
+		}
+		if f.Hint == "" {
+			f.Hint = "Hardening checklist item — not a confirmed vuln. Verify deploy defaults before changing production."
+		}
+		// .env.example / global_settings defaults are checklist-only, never high.
+		if strings.Contains(file, ".env.example") || strings.Contains(file, "global_settings") ||
+			strings.HasSuffix(file, ".env.sample") {
+			f.Severity = "low"
+			f.Confidence = "low"
+			f.Hint = "Example/default config checklist — not a production vuln by itself."
+		}
+	case strings.HasPrefix(rule, "library-") || f.Kind == "library_guidance":
+		f.Kind = "library_guidance"
+		if f.Confidence == "" {
+			f.Confidence = "medium"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "unknown"
+		}
+		if f.Hint == "" {
+			f.Hint = "Library/framework hot path — profile before optimizing; not an app N+1."
+		}
+	case rule == "sql-string-concat" || rule == "eval-usage" || rule == "shell-exec-injection":
+		if f.Confidence == "" {
+			f.Confidence = "high"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "possible"
+		}
+		if f.Hint == "" {
+			f.Hint = "Confirm untrusted input reaches this sink; then parameterize / remove eval / use argv."
+		}
+		// Demote residual FPs that still slipped through: migrate DDL, mode flags.
+		if strings.Contains(file, "/migrate") || strings.Contains(file, "/migration") ||
+			strings.Contains(ev, "script_eval_mode") || strings.Contains(ev, "create table if not exists") ||
+			strings.Contains(ev, "db.exec") || strings.Contains(ev, "tokio::spawn") {
+			f.Confidence = "low"
+			f.Exploitability = "unknown"
+			f.Severity = "low"
+			f.Hint = "Likely controlled migrate/schema or engine flag — verify before treating as exploitable."
+		}
+		// Framework ORM/compiler / manage.py shell — library guidance, not web RCE.
+		if isFrameworkSQLInternal(file) || isLibraryInternalPath(file) || strings.Contains(file, "/management/commands/") ||
+			(rule == "eval-usage" && (strings.Contains(ev, ".eval(") || strings.Contains(ev, "def eval"))) ||
+			(rule == "shell-exec-injection" && strings.Contains(file, "/management/")) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Kind = "library_guidance"
+			f.Hint = "Framework/CLI internal — not an application request-path vuln by itself."
+		}
+		// Drizzle/Prisma/sql tagged templates often parameterize ${} — not classic concat.
+		if rule == "sql-string-concat" && (strings.Contains(ev, "sql`") || strings.Contains(ev, "sql.raw") ||
+			strings.HasPrefix(strings.TrimSpace(ev), "sql`") || strings.Contains(ev, "prisma.$queryraw") ||
+			strings.Contains(ev, "sql<") && strings.Contains(ev, "`") ||
+			looksLikeORMParameterizedTaggedSQL(ev)) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "unknown"
+			f.Kind = "library_guidance"
+			f.Hint = "Tagged SQL template — confirm the driver parameterizes interpolations; not classic string-concat SQLi."
+		}
+		// Help / success / UI templates that slipped past the scanner — demote hard.
+		if rule == "sql-string-concat" && (strings.Contains(ev, "successfully") ||
+			strings.Contains(ev, "mingw") || strings.Contains(ev, "regression tests") ||
+			strings.Contains(ev, "categories") && strings.Contains(ev, "${") ||
+			strings.Contains(ev, "message:") && strings.Contains(ev, "${") ||
+			strings.Contains(ev, "updated successfully") || strings.Contains(ev, "qrels") ||
+			isHTTPOrUIConcat(ev)) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "unknown"
+			f.Hint = "Likely help text or UI success template — not SQL injection."
+		}
+		if rule == "eval-usage" && (strings.Contains(ev, "qrels") || strings.Contains(ev, "ndcg") ||
+			strings.Contains(ev, "fmt.") || strings.Contains(ev, "fprintf") ||
+			strings.Contains(ev, "eval (%") || strings.Contains(ev, `"eval `)) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "unknown"
+			f.Hint = "Likely metrics/help prose mentioning eval — not a dynamic code sink."
+		}
+		// Framework CLI startup eval(compile(…)) / Rails runner — library guidance, not web RCE.
+		if rule == "eval-usage" && (strings.Contains(ev, "eval(compile(") ||
+			strings.Contains(file, "/flask/cli.py") ||
+			strings.Contains(file, "/cli.py") && strings.Contains(ev, "compile(") ||
+			isFrameworkCLIEval(file, ev) || isFrameworkCompilerEval(file, ev)) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Kind = "library_guidance"
+			f.Hint = "Framework CLI/compiler eval — not a web request-path sink."
+		}
+	case rule == "hardcoded-secret" || rule == "raw-html-xss" || rule == "blade-unescaped-output":
+		if f.Confidence == "" {
+			f.Confidence = "medium"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "possible"
+		}
+		if f.Hint == "" {
+			f.Hint = "Confirm trust boundary (user-controlled data / real secret material) before patching."
+		}
+		// Framework intentional SafeString / mark_safe helpers → footgun, not app XSS.
+		if rule == "raw-html-xss" && (strings.Contains(file, "/django/contrib/") ||
+			strings.Contains(file, "/django/forms/") || strings.Contains(file, "/django/utils/") ||
+			strings.Contains(file, "/django/template/") || strings.HasPrefix(file, "django/") ||
+			strings.Contains(file, "/admin/helpers") || strings.Contains(ev, "mark_safe(") &&
+			(strings.Contains(file, "/contrib/") || strings.Contains(file, "/framework/"))) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Hint = "Framework intentional escape hatch — XSS only if callers pass untrusted HTML; not an app vuln by itself."
+			f.Kind = "library_guidance"
+		}
+		// Twig |trans|raw / Svelte preview+compiler / JSON-LD {@html — demote flood FPs.
+		if rule == "raw-html-xss" && (isTwigTransRaw(ev) || isSvelteCompilerHTMLProse(file, ev) ||
+			isStructuredDataHTML(ev) || isUIPreviewHTML(file, ev) ||
+			isLowProvenanceHTML(file, ev, ev) ||
+			strings.Contains(file, "preview") && strings.Contains(ev, "{@html") ||
+			strings.Contains(file, "/compiler/") && strings.Contains(ev, "{@html")) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Kind = "library_guidance"
+			f.Hint = "Static i18n |raw, compiler prose, preview/CSS-var HTML, or structured-data HTML — not a high-prec app XSS by itself."
+		}
+		if rule == "hardcoded-secret" && (strings.Contains(ev, "csrf") || strings.Contains(file, "request_forgery") ||
+			strings.Contains(ev, "action_controller.") || isConfigKeyNameRHS(ev) ||
+			strings.Contains(ev, "https://") || strings.Contains(ev, "http://") ||
+			strings.Contains(ev, "/oauth/") || isPlaceholderSecretLiteral(ev) ||
+			isEmptySecretAssignment(ev) || strings.Contains(ev, "=== undefined") ||
+			strings.Contains(ev, "== undefined")) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "unknown"
+			f.Kind = "library_guidance"
+			f.Hint = "Likely a session/CSRF *key name*, config key, OAuth URL, empty default, or docs/example placeholder — ignore unless the RHS is real secret material."
+		}
+	case rule == "csrf-disabled" || rule == "authz-gap" || rule == "authz-fail-open" || rule == "open-redirect" || rule == "missing-nonce-check":
+		if f.Confidence == "" {
+			f.Confidence = "medium"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "possible"
+		}
+		if f.Hint == "" {
+			f.Hint = "May be intentional for APIs/webhooks — confirm with owners before tightening."
+		}
+		if rule == "authz-fail-open" {
+			f.Confidence = "high"
+			f.Exploitability = "likely"
+			if f.Severity == "" || f.Severity == "medium" {
+				f.Severity = "high"
+			}
+			if f.Hint == "" || strings.Contains(f.Hint, "intentional") {
+				f.Hint = "Fail-open auth: empty token/config skips verification — require credentials in production."
+			}
+			f.Kind = "sink_candidate"
+		}
+		if rule == "open-redirect" && (strings.Contains(ev, "get_full_path") || strings.Contains(ev, "fullpath") ||
+			strings.Contains(ev, "formdataroutingredirect") || strings.Contains(ev, "does_not_exist_redirect") ||
+			strings.Contains(file, "/action_controller/metal/redirecting") ||
+			strings.Contains(file, "/actionpack/") && strings.Contains(file, "redirecting")) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Kind = "library_guidance"
+			f.Hint = "Same-path / debug redirect or framework Redirecting API — classic scanner FP; not an app open redirect."
+		}
+		// csrf_protect wrappers / getattr csrf_exempt checks are enforcement, not gaps.
+		// Empty-token guards are fail-closed (reject missing credential), not fail-open.
+		// Do NOT demote authz-fail-open (dataflow-lite confirmed empty-config allow).
+		if rule == "authz-gap" && (strings.Contains(ev, "csrf_protect") ||
+			strings.Contains(ev, "getattr") && strings.Contains(ev, "csrf") ||
+			isNonAuthTokenEmptyCheck(ev) || isEmptyTokenGuard(ev) ||
+			isDevGatedAuthSkip(ev, ev)) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "unknown"
+			f.Kind = "library_guidance"
+			f.Hint = "CSRF enforcement check, empty-token fail-closed guard, or DEV-gated skipAuth — not a production authz gap."
+		}
+	case rule == "injection-taint":
+		if f.Confidence == "" {
+			f.Confidence = "high"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "likely"
+		}
+		if f.Hint == "" {
+			f.Hint = "Request-derived data reaches this sink in-function — parameterize/sanitize before dismissing."
+		}
+		f.Kind = "sink_candidate"
+		// Still demote framework internals that slipped through.
+		if isLibraryInternalPath(file) || isFrameworkSQLInternal(file) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Exploitability = "framework-api"
+			f.Kind = "library_guidance"
+			f.Hint = "Framework/ORM internal — not an application request-path vuln by itself."
+		}
+	case rule == "c-unsafe-buffer" || rule == "redis-auth-gap":
+		if f.Confidence == "" {
+			f.Confidence = "medium"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "possible"
+		}
+		if f.Hint == "" {
+			f.Hint = "C/memory or Redis auth surface — confirm bounds checks / ACL before treating as exploitable."
+		}
+		// Example redis conf defaults are checklist, not confirmed vulns.
+		if rule == "redis-auth-gap" && (strings.HasSuffix(file, ".conf") || strings.Contains(file, "sentinel")) {
+			f.Confidence = "low"
+			f.Severity = "low"
+			f.Kind = "config_hardening"
+			f.Exploitability = "config-only"
+			f.Hint = "Documented example/default — pair with bind/ACL before public exposure; not a confirmed ACL vuln."
+		}
+	default:
+		if f.Confidence == "" {
+			f.Confidence = "low"
+		}
+		if f.Exploitability == "" {
+			f.Exploitability = "unknown"
+		}
+		if f.Hint == "" {
+			f.Hint = "Sink candidate only — verify with context/read before calling it a vulnerability."
+		}
+	}
+	if f.Severity == "" {
+		f.Severity = "medium"
+	}
+}
+
+func sevRank(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func confRank(s string) int {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}

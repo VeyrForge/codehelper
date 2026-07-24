@@ -1,6 +1,11 @@
 # Vendored toolchains / local caches
 .vendor/
+
+# codehelper (generated local — do not commit)
 .codehelper/
+CLAUDE.md
+.cursor/
+.claude/
 
 # Node
 node_modules/
@@ -24,11 +29,6 @@ vscode-extension/out/
 
 # Source maps (generated)
 **/*.map
-
-# AI assistant / editor-generated rule files (local, not for the repo)
-CLAUDE.md
-.cursor/
-.claude/
 
 # Stray indexer artifacts (generated when sub-paths get indexed as shards)
 *.tmp
@@ -69,6 +69,7 @@ docs/*
 !docs/MCP_REGISTRY.md
 !docs/public/
 !docs/public/**
+
 scripts/publish-public-mirrors.sh
 
 # third_party — research docs, experiments, infra (on disk; not tracked in codehelper)
@@ -94,3 +95,6 @@ third_party/green-compress/.github/workflows/deploy.yml
 
 # Rust build output from vendored green binaries (built only in CI)
 third_party/**/target/
+
+# Local shallow clones for orchestration eval (not committed)
+.eval-projects/

@@ -47,3 +47,20 @@ func TestLearningEnabled_StateString(t *testing.T) {
 		t.Fatal("expected state=enabled to count")
 	}
 }
+
+func TestLearningMode_ApprovalWhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".codehelper")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "learning.json"), []byte(`{"enabled":false,"mode":"approval"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LearningMode(dir); got != "approval" {
+		t.Fatalf("LearningMode=%q want approval", got)
+	}
+	if LearningEnabled(dir) {
+		t.Fatal("expected learning disabled")
+	}
+}

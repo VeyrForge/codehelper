@@ -28,7 +28,8 @@ type RegistryMeta struct {
 // fetches. ok=false when the ecosystem/package is unknown or declares no URL.
 //
 // When the ecosystem is unknown (no manifest match) it probes npm then PyPI then
-// crates and takes the first hit — a bare name is most often an npm package.
+// crates then Packagist and takes the first hit — a bare name is most often an
+// npm package; vendor/package names prefer Packagist when that probe runs.
 func resolveFromRegistry(ctx context.Context, f Fetcher, name, ecosystem string) (RegistryMeta, bool) {
 	name = strings.TrimSpace(name)
 	if name == "" || f == nil {
@@ -41,9 +42,17 @@ func resolveFromRegistry(ctx context.Context, f Fetcher, name, ecosystem string)
 		return resolvePyPI(ctx, f, name)
 	case "cargo":
 		return resolveCrates(ctx, f, name)
+	case "composer":
+		return resolvePackagist(ctx, f, name)
 	case "":
+		// vendor/package is almost always Composer; try Packagist first.
+		if strings.Count(name, "/") == 1 && !strings.HasPrefix(name, "@") && !isGoModulePath(name) {
+			if m, ok := resolvePackagist(ctx, f, name); ok {
+				return m, true
+			}
+		}
 		for _, try := range []func(context.Context, Fetcher, string) (RegistryMeta, bool){
-			resolveNpm, resolvePyPI, resolveCrates,
+			resolveNpm, resolvePyPI, resolveCrates, resolvePackagist,
 		} {
 			if m, ok := try(ctx, f, name); ok {
 				return m, true
@@ -135,6 +144,61 @@ func resolveCrates(ctx context.Context, f Fetcher, name string) (RegistryMeta, b
 		ver = doc.Crate.NewestVersion
 	}
 	return RegistryMeta{DocBase: docBase, Version: ver, Source: "crates", Trust: 6}, true
+}
+
+// resolvePackagist reads Packagist's package metadata and prefers homepage,
+// then repository. Covers Composer vendor/package names that have no curated
+// docBase (nesbot/carbon, guzzlehttp/guzzle, …).
+func resolvePackagist(ctx context.Context, f Fetcher, name string) (RegistryMeta, bool) {
+	if strings.Count(name, "/") != 1 || strings.HasPrefix(name, "@") {
+		return RegistryMeta{}, false
+	}
+	var doc struct {
+		Package struct {
+			Name       string `json:"name"`
+			Repository string `json:"repository"`
+			Versions   map[string]struct {
+				Homepage   string            `json:"homepage"`
+				Version    string            `json:"version"`
+				VersionNorm string           `json:"version_normalized"`
+				Extra      map[string]any    `json:"extra"`
+			} `json:"versions"`
+		} `json:"package"`
+	}
+	if !fetchJSON(ctx, f, "https://packagist.org/packages/"+name+".json", &doc) {
+		return RegistryMeta{}, false
+	}
+	if doc.Package.Name == "" && len(doc.Package.Versions) == 0 {
+		return RegistryMeta{}, false
+	}
+	// Prefer a stable version's homepage when present.
+	var homepage, ver string
+	for v, meta := range doc.Package.Versions {
+		if strings.Contains(v, "dev") || strings.HasPrefix(v, "dev-") {
+			continue
+		}
+		if homepage == "" {
+			homepage = meta.Homepage
+		}
+		if ver == "" {
+			ver = strings.TrimPrefix(meta.Version, "v")
+			if ver == "" {
+				ver = strings.TrimPrefix(v, "v")
+			}
+		}
+		if homepage != "" && ver != "" {
+			break
+		}
+	}
+	docBase := cleanDocURL(homepage)
+	if docBase == "" {
+		docBase = cleanDocURL(doc.Package.Repository)
+	}
+	if docBase == "" {
+		// Packagist package page is always a usable HTML landing.
+		docBase = "https://packagist.org/packages/" + name
+	}
+	return RegistryMeta{DocBase: docBase, Version: ver, Source: "packagist", Trust: 6}, true
 }
 
 // pickProjectURL chooses the most documentation-like entry from PyPI's

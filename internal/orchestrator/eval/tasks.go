@@ -151,6 +151,16 @@ func tasksForProject(a Anchor) []Task {
 			Task:        fmt.Sprintf("find dead unreferenced symbols related to %s", sym),
 			MustContain: []string{strings.ToLower(sym)},
 		},
+		{
+			Name: "security_probe", Kind: "security",
+			Task:        fmt.Sprintf("find security risks around %s: injection, hard-coded secrets, missing auth, mass-assignment", sym),
+			MustContain: []string{strings.ToLower(sym)},
+		},
+		{
+			Name: "optimization_probe", Kind: "optimization",
+			Task:        fmt.Sprintf("find performance smells near %s: N+1 queries, O(n^2) loops, unbounded alloc, sync-in-hot-path", sym),
+			MustContain: []string{strings.ToLower(sym)},
+		},
 	}
 }
 
@@ -186,12 +196,16 @@ func manualChainForKind(kind string) []string {
 		return []string{"query", "context", "impact", "test_impact"}
 	case "dead_code":
 		return []string{"project_context", "dead_code", "scout", "query", "context"}
+	case "security":
+		return []string{"kickoff", "query", "review", "context"}
+	case "optimization":
+		return []string{"kickoff", "hotspots", "query", "impact"}
 	default:
 		return []string{"query", "context"}
 	}
 }
 
-func runToolChain(ctx context.Context, inv *orchestrator.MeteredInvoker, h map[string]func(context.Context, map[string]any) (string, error), repo, task string, chain []string, format string) (string, []string) {
+func runToolChain(ctx context.Context, inv *orchestrator.MeteredInvoker, h map[string]func(context.Context, map[string]any) (string, error), repo, task, kind string, chain []string, format string) (string, []string) {
 	if format == "" {
 		format = "toon"
 	}
@@ -203,6 +217,12 @@ func runToolChain(ctx context.Context, inv *orchestrator.MeteredInvoker, h map[s
 		case "kickoff":
 			args["task"] = task
 			args["sections"] = "orient,reuse,steps,verify"
+			switch kind {
+			case "security":
+				args["role"] = "security"
+			case "optimization":
+				args["role"] = "performance"
+			}
 		case "scout", "query":
 			args["query"] = task
 			if tool == "query" {
@@ -215,6 +235,10 @@ func runToolChain(ctx context.Context, inv *orchestrator.MeteredInvoker, h map[s
 			args["verbosity"] = "short"
 		case "dead_code":
 			args["limit"] = 20
+		case "hotspots":
+			args["top_k"] = 10
+		case "review":
+			args["base_ref"] = "HEAD"
 		case "context", "impact", "test_impact":
 			qraw, _ := inv.Call(ctx, "query", map[string]any{"repo": repo, "query": task, "top_k": 3, "format": format})
 			parts = append(parts, qraw)

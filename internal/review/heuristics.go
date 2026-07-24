@@ -98,6 +98,9 @@ func IsTestPath(path string) bool {
 // these paths remain indexed and searchable; orientation tools should demote them.
 func IsSecondaryNoisePath(path string) bool {
 	p := strings.ToLower(filepath.ToSlash(path))
+	if IsNestedForeignToolTree(p) {
+		return true
+	}
 	for _, seg := range []string{
 		"/docs_src/", "/sample/", "/samples/", "/examples/", "/example/",
 		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
@@ -123,6 +126,58 @@ func IsSecondaryNoisePath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// IsNestedForeignToolTree reports paths under a nested codehelper product
+// checkout (e.g. discord_mod/codehelper/...) that pollute query/reuse/hotspots
+// for the host app. Does NOT match this repo's own cmd/codehelper CLI package,
+// nor first-party sources when the indexed root IS codehelper (paths are
+// internal/..., not codehelper/...).
+func IsNestedForeignToolTree(path string) bool {
+	p := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if p == "" {
+		return false
+	}
+	// Keep our own CLI package searchable when indexing codehelper itself.
+	if p == "cmd/codehelper" || strings.HasPrefix(p, "cmd/codehelper/") ||
+		strings.Contains(p, "/cmd/codehelper/") {
+		return false
+	}
+	if p == "codehelper" || strings.HasPrefix(p, "codehelper/") {
+		return true
+	}
+	// Nested deeper: …/codehelper/internal|cmd|pkg|vscode-extension|…
+	if i := strings.Index(p, "/codehelper/"); i >= 0 {
+		rest := p[i+len("/codehelper/"):]
+		if strings.HasPrefix(rest, "internal/") || strings.HasPrefix(rest, "cmd/") ||
+			strings.HasPrefix(rest, "pkg/") || strings.HasPrefix(rest, "scripts/") ||
+			strings.HasPrefix(rest, "vscode-extension/") || strings.HasPrefix(rest, "bin/") {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksLikeNestedCodehelperProduct reports whether absDir is a full nested
+// codehelper product tree (safe to prune during indexing of a host app).
+func LooksLikeNestedCodehelperProduct(absDir string) bool {
+	if strings.TrimSpace(absDir) == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(absDir, "internal", "mcpsvc")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(absDir, "cmd", "codehelper")); err == nil {
+		if _, err2 := os.Stat(filepath.Join(absDir, "AGENTS.md")); err2 == nil {
+			return true
+		}
+	}
+	modPath := filepath.Join(absDir, "go.mod")
+	b, err := os.ReadFile(modPath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "github.com/VeyrForge/codehelper")
 }
 
 // HasSiblingTestFile reports whether a source file already has a colocated

@@ -23,9 +23,9 @@ const docsCacheTTL = 24 * time.Hour
 func docsHandler(reg *registry.Registry) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := req.GetArguments()
-		library := strings.TrimSpace(argString(args, "library"))
+		library := strings.TrimSpace(argFirst(args, "library", "package", "pkg", "name"))
 		if library == "" {
-			return mcp.NewToolResultError("library is required"), nil
+			return mcp.NewToolResultError("library is required — pass library=<name> (aliases: package, pkg, name)"), nil
 		}
 		topic := strings.TrimSpace(argString(args, "topic"))
 		version := strings.TrimSpace(argString(args, "version"))
@@ -43,11 +43,8 @@ func docsHandler(reg *registry.Registry) server.ToolHandlerFunc {
 			cacheDir = filepath.Join(paths.RepoIndexDir(e.RootPath), "docs-cache")
 		}
 
-		if version == "" && repoRoot != "" {
-			if v, _ := docs.ResolveVersion(repoRoot, library); v != "" {
-				version = v
-			}
-		}
+		// Leave empty version to Engine.Lookup so it can set version_source=
+		// lockfile|manifest (pre-filling would mark every pin as "explicit").
 
 		// Network is gated: allowed if the project enabled research, the caller
 		// approved this call, or the operator set the env override.

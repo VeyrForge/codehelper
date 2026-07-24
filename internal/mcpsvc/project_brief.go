@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/VeyrForge/codehelper/internal/docs"
 )
 
 // projectBrief gathers the orientation a human (and an agent) wants up front so
@@ -24,8 +26,9 @@ func projectBrief(root string) (frameworks, deps []string, summary string) {
 
 var goRequireRe = regexp.MustCompile(`^\s*([\w./-]+)\s+(v[\w.+-]+)`)
 
-// keyDependencies parses the project's manifest(s) for direct dependencies and
-// their versions, returning up to a bounded set of "name@version" strings.
+// keyDependencies parses the project's manifest(s) + lockfiles for direct
+// dependencies and their versions (lockfile-exact when available), returning up
+// to a bounded set of "name@version" strings.
 func keyDependencies(root string) []string {
 	const maxDeps = 18
 	var out []string
@@ -39,6 +42,25 @@ func keyDependencies(root string) []string {
 			out = append(out, name)
 		} else {
 			out = append(out, name+"@"+ver)
+		}
+	}
+
+	// Prefer the docs package resolver (manifests + lockfile overlay) so orient
+	// and docs share the same pinned versions.
+	if deps := docs.ListDependencies(root); len(deps) > 0 {
+		for _, d := range deps {
+			if d.Dev {
+				continue
+			}
+			add(d.Name, d.Version)
+		}
+		sort.Strings(out)
+		out = dedupeStr(out)
+		if len(out) > maxDeps {
+			out = out[:maxDeps]
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
 
