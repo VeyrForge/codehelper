@@ -13,7 +13,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.2/codehelper_3.0.2_linux_amd64.mcpb",
-      "fileSha256": "0ab969e1e114f0b38928c128de9303380a6b0a1203ffedd429568f4b2e0638c5",
+      "fileSha256": "84f6942ec9b4f500da3d127947be3a5ec33be62c3239232a8f9abf9a86595fde",
       "transport": {
         "type": "stdio"
       }
@@ -21,7 +21,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.2/codehelper_3.0.2_linux_arm64.mcpb",
-      "fileSha256": "79d3854a84315ae09f25d61fa72ee40461132496ee2976dd5a2c3fd9acd56de4",
+      "fileSha256": "9d4a3dffa1228604fcfafd377c1a6018c27e929186a5b80d962dbd4c2e2b0a7b",
       "transport": {
         "type": "stdio"
       }
@@ -29,7 +29,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.2/codehelper_3.0.2_darwin_amd64.mcpb",
-      "fileSha256": "e3f5ba96b37b197e70f0f8d59e94120b3f95823a532a65f9bf2bd0ccf3e2f3f4",
+      "fileSha256": "cdc3754f33e1087fcdcb88201691590a63b2a86fa878b0c953c98d87ccf8b90c",
       "transport": {
         "type": "stdio"
       }
@@ -37,7 +37,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.2/codehelper_3.0.2_darwin_arm64.mcpb",
-      "fileSha256": "6e3c3c4a2a2ecf6578378e8882dcd16c3c25faf5a680893a9a3d9106a010e533",
+      "fileSha256": "8aaeb892cb3be4fefaedbde7ff4148e9f9ba25acf3fd52d669f3295858584d58",
       "transport": {
         "type": "stdio"
       }
@@ -45,7 +45,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/VeyrForge/codehelper/releases/download/v3.0.2/codehelper_3.0.2_windows_amd64.mcpb",
-      "fileSha256": "56d77a1a2be6d92e7431252dd812ce943cb43da9eacc84a783150fcea5755175",
+      "fileSha256": "441e0001ff25600c327f38a057e71b9a8cbc87349432d55ae6c504b991471f5e",
       "transport": {
         "type": "stdio"
       }
