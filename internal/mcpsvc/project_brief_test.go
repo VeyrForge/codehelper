@@ -15,13 +15,13 @@ func TestProjectBrief(t *testing.T) {
 
 	fw, deps, summary := projectBrief(dir)
 	joined := strings.Join(deps, " ")
-	if !strings.Contains(joined, "github.com/spf13/cobra@v1.8.0") {
+	if !strings.Contains(joined, "github.com/spf13/cobra@1.8.0") {
 		t.Errorf("missing cobra dep: %v", deps)
 	}
 	if strings.Contains(joined, "indirectdep") {
 		t.Errorf("indirect dep should be excluded: %v", deps)
 	}
-	if !strings.Contains(joined, "react@^18.2.0") {
+	if !strings.Contains(joined, "react@18.2.0") {
 		t.Errorf("missing react dep: %v", deps)
 	}
 	if !briefContains(fw, "react") {

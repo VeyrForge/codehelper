@@ -67,6 +67,16 @@ func TestReviewDiff_PathHeuristicsDemoted(t *testing.T) {
 
 func TestReviewDiff_SuppressesPathHeuristicsOnLargeDirtyTree(t *testing.T) {
 	dir := t.TempDir()
+	t.Cleanup(func() {
+		_ = filepath.Walk(dir, func(path string, _ os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			_ = os.Chmod(path, 0o755)
+			return nil
+		})
+		_ = os.RemoveAll(filepath.Join(dir, ".git"))
+	})
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command(args[0], args[1:]...)

@@ -390,6 +390,7 @@ func workflowCall(ctx context.Context, handlers map[string]server.ToolHandlerFun
 	if len(snippet) > 1200 {
 		snippet = snippet[:1200] + "…"
 	}
+	out["text"] = text
 	out["snippet"] = snippet
 	out["is_error"] = res != nil && res.IsError
 	out["ok"] = res != nil && !res.IsError

@@ -24,14 +24,17 @@ func TestImpactDefaultDirectionUpstream(t *testing.T) {
 	if ok, _ := res["ok"].(bool); !ok {
 		t.Fatalf("impact failed: %v", res)
 	}
-	snippet, _ := res["snippet"].(string)
+	body, _ := res["text"].(string)
+	if body == "" {
+		body, _ = res["snippet"].(string)
+	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(snippet), &payload); err != nil {
-		t.Fatalf("json: %v\n%s", err, snippet)
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("json: %v\n%s", err, body)
 	}
 	imp, _ := payload["impact"].(map[string]any)
 	if imp == nil {
-		t.Fatalf("missing impact object: %s", snippet)
+		t.Fatalf("missing impact object: %s", body)
 	}
 	if dir, _ := imp["direction"].(string); dir != "upstream" {
 		t.Fatalf("default direction want upstream, got %q", dir)
@@ -55,14 +58,17 @@ func TestImpactDownstreamClassHubAutoRetriesUpstream(t *testing.T) {
 	if ok, _ := res["ok"].(bool); !ok {
 		t.Fatalf("impact failed: %v", res)
 	}
-	snippet, _ := res["snippet"].(string)
+	body, _ := res["text"].(string)
+	if body == "" {
+		body, _ = res["snippet"].(string)
+	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(snippet), &payload); err != nil {
-		t.Fatalf("json: %v\n%s", err, snippet)
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("json: %v\n%s", err, body)
 	}
 	imp, _ := payload["impact"].(map[string]any)
 	if imp == nil {
-		t.Fatalf("missing impact: %s", snippet)
+		t.Fatalf("missing impact: %s", body)
 	}
 	nodes, _ := imp["nodes"].([]any)
 	dir, _ := imp["direction"].(string)

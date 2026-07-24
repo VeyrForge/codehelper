@@ -76,12 +76,20 @@ func TestExtractHoverAndLocations(t *testing.T) {
 
 func TestSiblingOfNpxAndNpxArgs(t *testing.T) {
 	dir := t.TempDir()
-	npx := filepath.Join(dir, "npx.cmd")
-	shim := filepath.Join(dir, "typescript-language-server.cmd")
-	if err := os.WriteFile(npx, []byte("@echo off\n"), 0o644); err != nil {
+	npxName := "npx"
+	shimName := "typescript-language-server"
+	script := "#!/bin/sh\nexit 0\n"
+	if runtime.GOOS == "windows" {
+		npxName = "npx.cmd"
+		shimName = "typescript-language-server.cmd"
+		script = "@echo off\n"
+	}
+	npx := filepath.Join(dir, npxName)
+	shim := filepath.Join(dir, shimName)
+	if err := os.WriteFile(npx, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(shim, []byte("@echo off\n"), 0o644); err != nil {
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -89,7 +97,7 @@ func TestSiblingOfNpxAndNpxArgs(t *testing.T) {
 		t.Setenv("Path", dir)
 	}
 	got := siblingOfNpx("typescript-language-server")
-	if got == "" || filepath.Base(got) != "typescript-language-server.cmd" {
+	if got == "" || filepath.Base(got) != shimName {
 		t.Fatalf("siblingOfNpx=%q", got)
 	}
 	args := npxServerArgs("typescript-language-server", "--stdio")
