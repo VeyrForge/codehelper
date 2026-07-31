@@ -1,0 +1,12 @@
+{
+  "architecture": "llama",
+  "layers": 1,
+  "experts_per_layer": 0,
+  "experts_used_per_token": 0,
+  "hidden_size": 64,
+  "intermediate_size": 128,
+  "source_gguf": "mini-test.gguf",
+  "method": "green_optimal",
+  "export_quant": "Q4_0",
+  "requant": "q4_0"
+}

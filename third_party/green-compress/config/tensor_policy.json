@@ -1,0 +1,64 @@
+{
+  "description": "Core green policy: 99.50% floor, skip repair when Q8 already passes.",
+  "rules": [
+    {
+      "match": "router|moe_gate|shared_expert",
+      "benchmark": {
+        "type": "green_optimal",
+        "skip_repair_quality_pct": 99.5,
+        "min_quality_pct": 99.5
+      }
+    },
+    {
+      "match": "ffn_gate|ffn_up|experts\\.",
+      "benchmark": {
+        "type": "green_optimal",
+        "skip_repair_quality_pct": 99.5,
+        "min_quality_pct": 99.5,
+        "rank": 4,
+        "repair_passes": 4,
+        "sparse_mode": "imatrix"
+      }
+    },
+    {
+      "match": "attn_|attention",
+      "benchmark": {
+        "type": "green_optimal",
+        "skip_repair_quality_pct": 99.5,
+        "min_quality_pct": 99.5,
+        "rank": 4,
+        "repair_passes": 4,
+        "sparse_mode": "imatrix"
+      }
+    },
+    {
+      "match": "down_proj|ffn_down",
+      "benchmark": {
+        "type": "green_optimal",
+        "min_quality_pct": 99.5,
+        "rank": 4,
+        "outlier_frac": 0.0002,
+        "repair_passes": 8,
+        "sparse_mode": "imatrix"
+      }
+    },
+    {
+      "match": "embd|output|lm_head",
+      "benchmark": {
+        "type": "green_optimal",
+        "skip_repair_quality_pct": 99.5,
+        "min_quality_pct": 99.5,
+        "rank": 2,
+        "repair_passes": 2
+      }
+    }
+  ],
+  "late_layers": {
+    "layer_min": 18,
+    "benchmark": {
+      "outlier_frac": 0.0003,
+      "repair_passes": 6,
+      "rank": 4
+    }
+  }
+}

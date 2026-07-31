@@ -1,0 +1,9 @@
+{
+  "name": "laravel",
+  "checks": [
+    "controller validation missing",
+    "mass assignment risk",
+    "policy or gate check missing",
+    "eloquent n+1 risk"
+  ]
+}

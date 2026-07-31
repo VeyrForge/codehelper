@@ -1,0 +1,13 @@
+type Order {
+  id: ID!
+}
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  order(id: ID!): Order
+  user(id: ID!): User
+}

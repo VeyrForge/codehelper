@@ -1,0 +1,12 @@
+{
+  "queries": [
+    {"id": "rank",       "query": "rank symbols bm25 trigram score",        "relevant": ["bm25Score", "trigramScore", "QueryHybrid"]},
+    {"id": "scaffold",   "query": "demote seeders and tests in ranking",     "relevant": ["isScaffoldSymbol", "queryWantsScaffold", "QueryHybridWithOptions"]},
+    {"id": "confidence", "query": "call graph confidence dynamic framework",  "relevant": ["callGraphConfidence"]},
+    {"id": "external",   "query": "external index zero footprint location",   "relevant": ["RepoIndexDir", "ExternalIndexHome"]},
+    {"id": "scope",      "query": "vague idea clarifying questions",          "relevant": ["scope", "scopeHandler"]},
+    {"id": "kickoff",    "query": "one call task starter orient reuse",       "relevant": ["kickoff", "kickoffHandler"]},
+    {"id": "impact",     "query": "blast radius risk tier of a symbol",       "relevant": ["Analyze", "blast", "impact"]},
+    {"id": "typo",       "query": "fuzzy candidate generation for typos",     "relevant": ["candidatesForTokens", "trigramScore", "trigram"]}
+  ]
+}

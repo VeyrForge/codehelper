@@ -1,0 +1,44 @@
+{
+  "id": "modal_form",
+  "triggers": [
+    "popup",
+    "modal",
+    "dialog",
+    "newsletter signup",
+    "contact form",
+    "lightbox",
+    "overlay"
+  ],
+  "requirements": [
+    "visible open trigger",
+    "close button",
+    "ESC closes modal",
+    "outside click closes modal unless form dirty",
+    "focus trap while open",
+    "restore focus to opener on close",
+    "aria-modal=\"true\"",
+    "aria-labelledby or aria-label",
+    "prevent background scroll while open",
+    "mobile responsive layout",
+    "loading state on submit",
+    "success and error states",
+    "duplicate submit guard",
+    "localizable user-visible strings"
+  ],
+  "security": [
+    "validate input",
+    "sanitize input before storage",
+    "escape output",
+    "nonce for state-changing AJAX",
+    "permission check for privileged actions"
+  ],
+  "performance": [
+    "no heavy global listeners without cleanup",
+    "lazy initialize modal when possible",
+    "debounce expensive handlers"
+  ],
+  "verify": [
+    "lint changed JS/CSS/PHP",
+    "keyboard behavior smoke check if no automated UI tests"
+  ]
+}

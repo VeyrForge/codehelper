@@ -1,0 +1,157 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Pin ≥1.25.12 for current stdlib govulncheck findings (tls/x509/html/template/net).
+          go-version: "1.25.12"
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Check gofmt (LF / formatting)
+        run: |
+          bad=$(gofmt -l cmd internal pkg 2>/dev/null | head -n 50 || true)
+          if [ -n "$bad" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$bad" >&2
+            echo "Hint: ensure *.go uses LF (see .gitattributes) and run gofmt -w." >&2
+            exit 1
+          fi
+        working-directory: .
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          govulncheck ./...
+        working-directory: .
+      - name: gosec
+        # Advisory: HIGH backlog (G703/G702/G122) must not flake CI until triaged.
+        continue-on-error: true
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.24.7
+          gosec -quiet -severity=high -confidence=high -exclude-generated -exclude=G122 ./...
+        working-directory: .
+      - name: Test
+        run: CGO_ENABLED=1 go test ./... -short
+        working-directory: .
+      - name: Reset eval index state
+        run: rm -rf .codehelper
+        working-directory: .
+      - name: Build index for eval
+        run: CGO_ENABLED=1 go run ./cmd/codehelper analyze
+        working-directory: .
+      - name: Qrels core regression gate
+        run: CGO_ENABLED=1 go test ./internal/bench/ -run QrelsCore -count=1 -v
+        working-directory: .
+      - name: Real-index NL retrieval gate
+        run: CGO_ENABLED=1 go test ./internal/retrieval/ -run RealIndex -count=1 -v
+        working-directory: .
+      - name: Agent discovery harness tests
+        run: node --test scripts/lib/agent-discovery.test.mjs
+        working-directory: .
+      - name: Write CI eval suite
+        run: |
+          cat > /tmp/ci-eval-suite.json <<'EOF'
+          {
+            "prompts": [
+              {
+                "prompt_id": "intake_project_brief",
+                "must_contain": ["PRIMARY OUTCOME", "ASSUMPTION:", "[UNCERTAIN]"]
+              },
+              {
+                "prompt_id": "planning_contract",
+                "must_contain": ["VERIFICATION", "ROLLBACK", "FAILURE CONDITIONS", "[UNCERTAIN]"]
+              },
+              {
+                "prompt_id": "agent_guardrails",
+                "must_contain": ["argv", "graph tools", "fail closed", "[UNCERTAIN]"],
+                "must_not_contain": ["console.log", "FIXME"]
+              }
+            ]
+          }
+          EOF
+        working-directory: .
+      - name: Eval gate
+        run: CGO_ENABLED=1 go run ./cmd/codehelper eval --repo codehelper --suite /tmp/ci-eval-suite.json
+        working-directory: .
+
+  test-windows:
+    runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+      - name: Check gofmt
+        shell: bash
+        run: |
+          bad=$(gofmt -l cmd internal pkg 2>/dev/null | head -n 50 || true)
+          if [ -n "$bad" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+      - name: Test
+        shell: bash
+        run: CGO_ENABLED=1 go test ./... -short
+        working-directory: .
+
+  # Multi-bed paired MCP smoke. Default: build minimal indexed beds in-job.
+  # Optional: vars.CODEHELPER_TESTBEDS (self-hosted). Skip: CODEHELPER_SKIP_TESTBEDS=1|true.
+  testbeds-paired:
+    runs-on: ubuntu-latest
+    if: ${{ vars.CODEHELPER_SKIP_TESTBEDS != '1' && vars.CODEHELPER_SKIP_TESTBEDS != 'true' }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CODEHELPER_REQUIRE_TESTBEDS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Resolve / prepare testbeds
+        env:
+          PREPROVISIONED: ${{ vars.CODEHELPER_TESTBEDS }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PREPROVISIONED:-}" ] && [ -d "$PREPROVISIONED" ]; then
+            echo "Using pre-provisioned CODEHELPER_TESTBEDS=$PREPROVISIONED"
+            echo "CODEHELPER_TESTBEDS=$PREPROVISIONED" >> "$GITHUB_ENV"
+          else
+            chmod +x scripts/ci-prepare-minimal-testbeds.sh
+            OUT="${RUNNER_TEMP}/codehelper-minimal-testbeds"
+            scripts/ci-prepare-minimal-testbeds.sh "$OUT"
+            echo "CODEHELPER_TESTBEDS=$OUT" >> "$GITHUB_ENV"
+          fi
+        working-directory: .
+      - name: Paired MCP multi-bed smoke
+        run: |
+          chmod +x scripts/mcp-paired-eval.sh
+          scripts/mcp-paired-eval.sh --report /tmp/codehelper-paired-report
+        working-directory: .
+      - name: Upload paired report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: paired-mcp-lite
+          path: /tmp/codehelper-paired-report
+          if-no-files-found: ignore

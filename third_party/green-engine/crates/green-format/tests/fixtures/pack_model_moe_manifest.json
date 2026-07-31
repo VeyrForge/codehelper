@@ -1,0 +1,54 @@
+{
+  "format": "green-model",
+  "version": 1,
+  "architecture": "qwen2moe",
+  "source_model": "tiny-moe.gguf",
+  "method": "green_optimal",
+  "compression_note": "M4: expert greenpack is raw-f32 GRNP payload with catalogue in tensors[]",
+  "layers": 1,
+  "experts_per_layer": 2,
+  "experts_used_per_token": 1,
+  "hidden_size": 64,
+  "intermediate_size": 128,
+  "tensor_files": [
+    "metadata.gguf",
+    "dense.gguf",
+    "experts-000.greenpack"
+  ],
+  "files": {
+    "metadata": "metadata.gguf",
+    "dense": "dense.gguf",
+    "experts": "experts-000.greenpack"
+  },
+  "tensors": [
+    {
+      "name": "token_embd.weight",
+      "role": "embedding",
+      "layer": null,
+      "expert": null,
+      "shape": [64, 128],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 4608,
+      "checksum": ""
+    },
+    {
+      "name": "blk.0.ffn_gate_exps.0.weight",
+      "role": "expert",
+      "layer": 0,
+      "expert": 0,
+      "shape": [64, 128],
+      "source_gguf_type": "F32",
+      "green_compression_type": "greenpack_raw_f32",
+      "ggml_type": "F32",
+      "file": "experts-000.greenpack",
+      "offset": 12,
+      "compressed_size": 32768,
+      "length": 32768,
+      "checksum": ""
+    }
+  ],
+  "expert_tensors_pending": []
+}

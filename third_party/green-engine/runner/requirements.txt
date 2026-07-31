@@ -1,0 +1,4 @@
+# Green Engine runner — run GGUF models via the ggml/llama.cpp backend.
+# For CPU prebuilt wheels: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+llama-cpp-python
+huggingface_hub

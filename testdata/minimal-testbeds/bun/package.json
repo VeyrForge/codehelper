@@ -1,0 +1,7 @@
+{
+  "name": "bun-minimal-bed",
+  "scripts": {
+    "start": "bun run index.ts",
+    "test": "bun test"
+  }
+}

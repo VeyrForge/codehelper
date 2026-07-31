@@ -1,0 +1,11 @@
+name: flutter_probe
+description: Minimal Flutter stub for widget/screen/GoRouter densify probes
+publish_to: none
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  go_router: 14.0.0
+flutter:
+  uses-material-design: true

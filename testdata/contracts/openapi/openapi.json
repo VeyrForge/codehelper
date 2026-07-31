@@ -1,0 +1,5 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Shallow openapi/ dir stub", "version": "1.0.0" },
+  "paths": { "/v1/items": {} }
+}

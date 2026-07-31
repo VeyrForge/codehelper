@@ -1,0 +1,6 @@
+{
+  "metadata.gguf": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dense.gguf": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "experts-000.greenpack": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "manifest.json": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}

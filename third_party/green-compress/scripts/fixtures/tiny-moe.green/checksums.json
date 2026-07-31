@@ -1,0 +1,8 @@
+{
+  "metadata.gguf": "008f69d0b729b7b72a6ae1cc16c775da82a6ab0563c66ee600ef93b96b5a72ba",
+  "dense.gguf": "7b762f354ab4d3708cb1fe2fa2d3bef45f1805ed4a1e0cbcd4096b02180b3835",
+  "experts-000.greenpack": "5c13a0e8cee2038b2adf5b05ef42fb359beabe826ae84020f0d013226857525a",
+  "manifest.json": "79976b4d10c14363d665c6818a383f3a49c7f10d7f17fdd51dbf13f1b66943b6",
+  "config.json": "ba3b16adbe19f41e2cef1327d8eac606d4e13b5823d43e06fcdf91238215ffa3",
+  "tokenizer.json": "4b0e77d13f071afa2bf3d39ebadab36d78750dfbc493bfea83d5de9c3aed8483"
+}

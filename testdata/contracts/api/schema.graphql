@@ -1,0 +1,14 @@
+# stub GraphQL schema for agent locate / projects contracts
+type Order {
+  id: ID!
+  total: Float!
+}
+
+type Query {
+  order(id: ID!): Order
+  orders: [Order!]!
+}
+
+type Mutation {
+  createOrder(total: Float!): Order
+}

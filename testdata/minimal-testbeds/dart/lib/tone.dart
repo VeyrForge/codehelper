@@ -1,0 +1,1 @@
+enum Tone { casual, formal }

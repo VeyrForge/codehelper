@@ -1,0 +1,7 @@
+{
+  "name": "deno-minimal-bed",
+  "tasks": {
+    "start": "deno run --allow-net main.ts",
+    "test": "deno test"
+  }
+}

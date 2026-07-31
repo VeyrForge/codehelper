@@ -1,0 +1,13 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.4",
+  "Category": "",
+  "Description": "Unreal-lite detect stub (no engine download)",
+  "Modules": [
+    {
+      "Name": "MyGame",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

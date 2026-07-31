@@ -1,0 +1,10 @@
+- name: Configure web
+  hosts: webservers
+  become: true
+  roles:
+    - web
+  tasks:
+    - name: Ensure nginx running
+      ansible.builtin.service:
+        name: nginx
+        state: started

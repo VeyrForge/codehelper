@@ -1,0 +1,10 @@
+- name: Install packages
+  ansible.builtin.apt:
+    name:
+      - nginx
+    state: present
+
+- name: Notify restart
+  ansible.builtin.debug:
+    msg: packages ready
+  notify: Restart nginx

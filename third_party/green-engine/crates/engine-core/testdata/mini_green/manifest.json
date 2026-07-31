@@ -1,0 +1,47 @@
+{
+  "format": "green-model",
+  "version": 1,
+  "model": "mini_green",
+  "arch": "llama",
+  "methods": [],
+  "files": {
+    "metadata": "metadata.gguf",
+    "dense": "dense.gguf",
+    "tokenizer": null
+  },
+  "tensors": [
+    {
+      "name": "token_embd.weight",
+      "role": "embedding",
+      "layer": null,
+      "expert": null,
+      "shape": [8, 4],
+      "file": "dense.gguf",
+      "offset": 0,
+      "length": 32,
+      "source_gguf_type": "F32"
+    },
+    {
+      "name": "blk.0.attn_q.weight",
+      "role": "attn_q",
+      "layer": 0,
+      "expert": null,
+      "shape": [4, 4],
+      "file": "dense.gguf",
+      "offset": 32,
+      "length": 16,
+      "source_gguf_type": "F32"
+    },
+    {
+      "name": "blk.0.ffn_down.weight",
+      "role": "ffn_down",
+      "layer": 0,
+      "expert": null,
+      "shape": [4, 4],
+      "file": "dense.gguf",
+      "offset": 48,
+      "length": 16,
+      "source_gguf_type": "F32"
+    }
+  ]
+}

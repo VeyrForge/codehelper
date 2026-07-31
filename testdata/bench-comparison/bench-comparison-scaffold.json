@@ -1,0 +1,159 @@
+{
+  "generated_at": "2026-07-24T18:18:29Z",
+  "methodology": "docs/BENCHMARK_COMPARISON.md",
+  "harness": "scripts/bench-comparison-scaffold.sh",
+  "host": {
+    "uname": "Linux",
+    "arch": "x86_64",
+    "go": "go version go1.25.5 linux/amd64",
+    "codehelper": "3.0.1",
+    "git_sha": "949849c"
+  },
+  "arms": [
+    "A_host_baseline",
+    "B_codehelper_mcp"
+  ],
+  "optional_arms": [
+    "C_guided",
+    "D_competitor_class",
+    "E_architect_execute"
+  ],
+  "bed_tiers": [
+    "strong",
+    "medium",
+    "weak"
+  ],
+  "testbeds": ".testbeds",
+  "indexed_beds_discovered": 30,
+  "fixture_only": true,
+  "metrics_columns": [
+    "bed",
+    "kind",
+    "winner",
+    "mcp_locate_hit",
+    "baseline_locate_hit",
+    "mcp_ms",
+    "baseline_ms",
+    "delta_ms_mcp_minus_base",
+    "mcp_resp_bytes",
+    "baseline_resp_bytes",
+    "mcp_tool_calls",
+    "baseline_tool_calls"
+  ],
+  "paired_summary": {
+    "beds_run": 1,
+    "pairs": 1,
+    "wins_mcp": 1,
+    "wins_baseline": 0,
+    "ties": 0,
+    "mcp_locate_hit_rate": 1.0,
+    "mode": "fixture",
+    "methodology": "mcp-eval-methodology.md \u00a71.1 lite (arms A vs B, objective locate)",
+    "generated_at_paired": "2026-07-24T18:18:29Z"
+  },
+  "paired_results": [
+    {
+      "bed": "001",
+      "kind": "architecture_qa",
+      "winner": "mcp",
+      "mcp_locate_hit": true,
+      "baseline_locate_hit": true,
+      "mcp_ms": 10,
+      "baseline_ms": 0,
+      "delta_ms_mcp_minus_base": 10,
+      "mcp_resp_bytes": 3405,
+      "baseline_resp_bytes": 13936,
+      "mcp_tool_calls": 3,
+      "baseline_tool_calls": 1,
+      "task": "How does Authenticate get used?"
+    }
+  ],
+  "competitors": [
+    {
+      "class_id": "D1",
+      "class": "editor-builtin grep/fuzzy",
+      "status": "host_available",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "Use the same host Read/Grep/Glob tasks as arm A; record metrics only after a dated paired run."
+    },
+    {
+      "class_id": "D2a",
+      "class": "LSP gopls",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "go install golang.org/x/tools/gopls@latest  # offline: use a pre-fetched module cache"
+    },
+    {
+      "class_id": "D2b",
+      "class": "LSP pyright",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "npm install -g pyright  # or: pip install pyright \u2014 do not run from this harness"
+    },
+    {
+      "class_id": "D2c",
+      "class": "LSP tsserver-wrapper",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "npm install -g typescript-language-server typescript  # offline install only"
+    },
+    {
+      "class_id": "D3",
+      "class": "other local MCP / code-intel",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "CODEHELPER_COMPETITOR_BIN unset \u2014 set to a pre-installed local binary to stub arm D"
+    },
+    {
+      "class_id": "D4",
+      "class": "cloud/IDE-hosted index",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "Re-run on the same beds with the cloud product; do not paste marketing tables."
+    },
+    {
+      "class_id": "D5a",
+      "class": "SCIP CLI",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "Install SCIP indexer + CLI offline from sourcegraph/scip releases; harness never downloads."
+    },
+    {
+      "class_id": "D5b",
+      "class": "src-cli",
+      "status": "N/A",
+      "bin": "",
+      "version": "",
+      "metrics": null,
+      "metrics_display": "N/A",
+      "install_or_run_hint": "Install Sourcegraph src-cli offline if comparing precise index; harness never downloads."
+    }
+  ],
+  "caveats": [
+    "self-repo figures in BENCHMARK.md are not multi-bed hold-outs",
+    "methodology-lite locate wins are not agent resolve-rate claims",
+    "competitor metrics must be filled from local re-runs only \u2014 never scraped",
+    "N/A competitor cells mean the tool was missing or not measured \u2014 not a score of zero"
+  ]
+}

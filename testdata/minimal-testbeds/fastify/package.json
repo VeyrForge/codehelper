@@ -1,0 +1,7 @@
+{
+  "name": "fastify-minimal-bed",
+  "private": true,
+  "dependencies": {
+    "fastify": "4.28.1"
+  }
+}

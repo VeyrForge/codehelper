@@ -1,0 +1,235 @@
+package mcpsvc
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/VeyrForge/codehelper/internal/detect"
+	"github.com/VeyrForge/codehelper/internal/freshness"
+	"github.com/VeyrForge/codehelper/internal/mcpimpact"
+	"github.com/VeyrForge/codehelper/internal/profile"
+	"github.com/VeyrForge/codehelper/internal/registry"
+	"github.com/VeyrForge/codehelper/internal/retrieval"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// RegisterRetrievalFacadeTools wires ACI facades for hybrid search + context bundles.
+func RegisterRetrievalFacadeTools(s *server.MCPServer, reg *registry.Registry) {
+	regRef := reg
+	s.AddTool(mcp.NewTool("search_hybrid",
+		mcp.WithDescription("Hybrid locate: BM25/FTS → 1–2 hop call/import expand → RRF fuse (optional vector channel when CODEHELPER_EMBED_URL is set). Prefer over raw query when you need structurally related neighbors, not only lexical matches. Optional path= returns a hub-biased public API map for that package (library spine)."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Symbol name, concept, or natural-language locate task")),
+		mcp.WithString("path", mcp.Description("Optional package/directory prefix for a hub-biased public_api_map (e.g. lib/ or internal/retrieval)")),
+		mcp.WithNumber("top_k", mcp.Description("Max ranked hits (default 10)"), mcp.DefaultNumber(0)),
+		mcp.WithString("intent", mcp.Description("Optional task intent: explore|debug|test|refactor")),
+		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
+		annotReadOnlyClosedWorld(),
+	), timedTool("search_hybrid", searchHybridHandler(regRef)))
+
+	s.AddTool(mcp.NewTool("context_bundle",
+		mcp.WithDescription("ACI one-shot for ONE symbol: bounded SOURCE + callers + callees + imports (+ nearby tests). Prefer after search_hybrid/query instead of chaining context + read_workspace_file. PARAM: name= (same as context; NOT change_kit's target=). Pass path= to disambiguate collisions."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("REQUIRED key is `name` — symbol name or sym: id (aliases: symbol, sym, target). Same as context; different from change_kit's target=.")),
+		mcp.WithString("path", mcp.Description("Definition file to disambiguate")),
+		mcp.WithNumber("line", mcp.Description("Definition line to disambiguate (optional)")),
+		mcp.WithNumber("max_callers", mcp.Description("Caller cap (default 24)"), mcp.DefaultNumber(0)),
+		mcp.WithNumber("max_callees", mcp.Description("Callee cap (default 24)"), mcp.DefaultNumber(0)),
+		mcp.WithNumber("max_imports", mcp.Description("Import cap (default 24)"), mcp.DefaultNumber(0)),
+		mcp.WithNumber("max_source_lines", mcp.Description("Definition source line cap (default 40; small bodies auto-expand)"), mcp.DefaultNumber(0)),
+		mcp.WithBoolean("include_tests", mcp.Description("Include nearby test callers (default true)"), mcp.DefaultBool(true)),
+		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
+		annotReadOnlyClosedWorld(),
+	), timedTool("context_bundle", contextBundleHandler(regRef)))
+}
+
+type searchHybridResponse struct {
+	Hits                 any                        `json:"hits"`
+	HitsTruncated        int                        `json:"hits_truncated,omitempty"`
+	PublicAPIMap         []retrieval.PublicAPIEntry `json:"public_api_map,omitempty"`
+	FusionNote           string                     `json:"fusion_note,omitempty"`
+	SemanticRerank       string                     `json:"semantic_rerank,omitempty"`
+	Freshness            freshness.Report           `json:"freshness"`
+	Warning              string                     `json:"warning,omitempty"`
+	RecommendedNextTools []string                   `json:"recommended_next_tools,omitempty"`
+}
+
+func searchHybridHandler(reg *registry.Registry) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.GetArguments()
+		q := argQuery(args)
+		if q == "" {
+			return emptyQueryRecovery("search_hybrid"), nil
+		}
+		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		st, err := openGraph(repo.RootPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		defer st.Close()
+
+		topK := int(mcp.ParseInt64(req, "top_k", 0))
+		if topK <= 0 {
+			topK = 10
+		}
+		intent := argString(args, "intent")
+		diffSet, _ := detect.ChangedSymbolSet(ctx, repo.RootPath, repo.Name, "HEAD~1", st)
+		retrieval.EnsureEmbedder()
+		opts := retrieval.MCPQueryOptionsWithProfile(
+			repo.RootPath, intent, strings.Fields(strings.ToLower(q)), diffSet,
+		)
+		opts.EnableGraphExpand = true
+		hits, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, q, topK*2, opts)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		hits, _ = demoteNoiseForQuery(q, hits)
+		hits, _ = dropHostBleedHits(hits, repo.Name)
+		hits = demoteIntentMismatchedHits(q, hits)
+		upgradeHitDefLines(repo.RootPath, hits)
+		surfaced, truncated := capHits(hits, topK)
+		fresh := freshness.Inspect(repo.RootPath)
+		out := searchHybridResponse{
+			Hits:                 hitsView(surfaced, false),
+			HitsTruncated:        truncated,
+			Freshness:            fresh,
+			FusionNote:           "BM25/FTS → 1–2 hop graph expand → RRF; vectors RRF-fused when CODEHELPER_EMBED_URL is set.",
+			SemanticRerank:       semanticRerankStatus(surfaced),
+			RecommendedNextTools: []string{"context_bundle", "context", "impact", "trace"},
+		}
+		if pkg := strings.TrimSpace(argString(args, "path")); pkg != "" {
+			if api, aerr := retrieval.BuildPublicAPIMap(ctx, st, repo.Name, retrieval.PublicAPIMapOptions{
+				PathPrefix: pkg, Limit: 40,
+			}); aerr == nil {
+				out.PublicAPIMap = api
+			}
+		}
+		if fresh.Stale {
+			out.Warning = "index may be stale: " + fresh.StaleReason
+		}
+		if len(surfaced) == 0 {
+			out.FusionNote += " No hits — try a shorter distinctive term, context_bundle on a known sym: id, or codehelper analyze."
+		}
+		return mustToolResultFormatted(scrubHostBleedPayload(out, repo.Name), resolveFormat(args))
+	}
+}
+
+func contextBundleHandler(reg *registry.Registry) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.GetArguments()
+		name := argFirst(args, "name", "symbol", "sym", "target")
+		if name == "" {
+			return mcp.NewToolResultError(
+				"name is required — wrong/missing arg. Expected: {\"name\":\"SymbolName\"} (or sym: id from search_hybrid/query). " +
+					"Canonical key is name= (same as context). change_kit uses target= instead.",
+			), nil
+		}
+		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		st, err := openGraph(repo.RootPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		defer st.Close()
+
+		wantPath := strings.TrimSpace(argString(args, "path"))
+		wantLine := int(argFloat(args, "line", 0))
+		sym, cands, err := resolveSymbolByName(ctx, st, repo.Name, name, wantPath, wantLine, repo.RootPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if sym == nil {
+			return mustToolResultFormatted(map[string]any{
+				"ambiguous":  true,
+				"name":       name,
+				"candidates": cands,
+				"note":       "multiple symbols share this name — pass path= or a sym: id",
+			}, resolveFormat(args))
+		}
+
+		callerLim := int(mcp.ParseInt64(req, "max_callers", 0))
+		calleeLim := int(mcp.ParseInt64(req, "max_callees", 0))
+		importLim := int(mcp.ParseInt64(req, "max_imports", 0))
+		srcLim := int(mcp.ParseInt64(req, "max_source_lines", 0))
+		includeTests := true
+		if v, ok := args["include_tests"].(bool); ok {
+			includeTests = v
+		}
+		bun, err := retrieval.BuildContextBundle(ctx, st, repo.Name, sym.ID, retrieval.ContextBundleOptions{
+			CallerLimit:    callerLim,
+			CalleeLimit:    calleeLim,
+			ImportLimit:    importLim,
+			RepoRoot:       repo.RootPath,
+			MaxSourceLines: srcLim,
+			IncludeTests:   includeTests,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if bun != nil && bun.Symbol != nil {
+			upgradeSymbolDefLine(repo.RootPath, bun.Symbol)
+		}
+		fresh := freshness.Inspect(repo.RootPath)
+		out := map[string]any{
+			"bundle":                 bun,
+			"freshness":              fresh,
+			"recommended_next_tools": []string{"impact", "trace", "change_kit"},
+		}
+		primaryLang := ""
+		if pr, perr := profile.ReadOrGenerate(repo.RootPath); perr == nil && pr != nil {
+			primaryLang = pr.PrimaryLanguage
+		}
+		graphConf := callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
+		if bun != nil && bun.Symbol != nil {
+			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, bun.Symbol.ID, 2, "upstream"); aerr == nil && res != nil {
+				deps := len(res.Nodes) - 1
+				if deps < 0 {
+					deps = 0
+				}
+				if len(res.Nodes) > 1 || graphConf != "" || (isDynamicSparseLanguage(primaryLang) && deps == 0) {
+					br := blastRadius{
+						RiskTier:   res.RiskTier,
+						Dependents: deps,
+						Confidence: graphConf,
+					}
+					if graphConf != "" {
+						br.RiskTier = "unknown"
+					}
+					for _, n := range res.Nodes {
+						if n.Depth == 0 || len(br.Top) >= 6 {
+							continue
+						}
+						br.Top = append(br.Top, fmt.Sprintf("%s %s", n.Name, impactNodeLoc(repo.RootPath, n)))
+					}
+					out["blast_radius"] = br
+				}
+			}
+		}
+		emptyEdges := bun != nil && len(bun.Callers) == 0 && len(bun.Callees) == 0 && len(bun.Imports) == 0
+		if graphConf != "" {
+			out["call_graph_confidence"] = graphConf
+			out["confidence"] = 0.45
+			out["warnings"] = appendSparseIsolationWarnings(nil, graphConf, primaryLang, emptyEdges)
+			if emptyEdges {
+				out["note"] = "SPARSE/empty edges — do NOT treat as leaf-safe. " + graphConf
+			} else {
+				out["note"] = "SPARSE CALL GRAPH — callers may be under-counted. " + graphConf
+			}
+		} else if emptyEdges {
+			out["note"] = "no graph edges resolved — leaf-like or unresolved edges; try impact/trace or codehelper analyze --force"
+		}
+		if fresh.Stale {
+			out["warning"] = "index may be stale: " + fresh.StaleReason
+			out["recovery_hint"] = RecoveryRefreshIndex
+			out["suggested_fix"] = "codehelper analyze --force"
+		}
+		return mustToolResultFormatted(scrubHostBleedPayload(out, repo.Name), resolveFormat(args))
+	}
+}

@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package demo.v1;
+
+import "common/types.proto";
+import "google/protobuf/empty.proto";
+
+// User is the primary message for architecture_qa / feature_orient probes.
+message User {
+  string id = 1;
+  string name = 2;
+  demo.common.Status status = 3;
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+}
+
+// UserService is the gRPC service surface (rpc densify + contracts link key).
+service UserService {
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}

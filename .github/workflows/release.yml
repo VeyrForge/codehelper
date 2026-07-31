@@ -1,0 +1,340 @@
+name: release
+
+# Builds all platform packages on every v* tag push and publishes a GitHub release.
+# Manual runs require a validated v* tag input (never uses branch name as version).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (must match vMAJOR.MINOR.PATCH, e.g. v3.0.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ inputs.tag }}"
+          else
+            REF="${GITHUB_REF_NAME}"
+          fi
+          REF="$(echo "$REF" | tr -d '[:space:]')"
+          case "$REF" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "Invalid tag '$REF' (expected vMAJOR.MINOR.PATCH, e.g. v3.0.3)" >&2
+              exit 1
+              ;;
+          esac
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag=$REF version=${REF#v}"
+
+  # Gate: never publish a release from a tree that doesn't build/test. This is the
+  # step that would have caught the agents.go syntax error before a broken release.
+  # Matrix covers Linux + Windows (CGO/tree-sitter) before multi-platform builds.
+  test:
+    name: test (${{ matrix.os }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Check gofmt
+        shell: bash
+        run: |
+          bad=$(gofmt -l cmd internal pkg 2>/dev/null | head -n 50 || true)
+          if [ -n "$bad" ]; then
+            echo "gofmt needed on:" >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+      - name: govulncheck
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+          govulncheck ./...
+      - name: Run tests
+        shell: bash
+        run: |
+          # -short skips live MCP quality beds (public tree excludes .testbeds).
+          CGO_ENABLED=1 go test ./... -short
+
+  # CGO (tree-sitter) cannot cross-compile to darwin/windows from one Linux runner,
+  # which is why every release since v2.2.0 shipped linux/amd64 only. Fix: build each
+  # target NATIVELY on its own runner, then merge the artifacts into one GitHub release.
+  build:
+    needs: [resolve, test]
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    goos: linux,   goarch: amd64, rust_target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, goos: linux,   goarch: arm64, rust_target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15-intel, goos: darwin,  goarch: amd64, rust_target: x86_64-apple-darwin }
+          - { runner: macos-14,         goos: darwin,  goarch: arm64, rust_target: aarch64-apple-darwin }
+          - { runner: windows-latest,   goos: windows, goarch: amd64, rust_target: x86_64-pc-windows-msvc }
+          # Non-blocking: arm64 runner / CGO can flake; amd64 release still publishes.
+          - { runner: windows-11-arm,   goos: windows, goarch: arm64, rust_target: aarch64-pc-windows-msvc, experimental: true }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Pin patch (not 1.25.x) so release binaries match CI/govulncheck toolchain.
+          go-version: "1.25.12"
+      # Linux gcc for CGO. macOS ships clang; Windows ships MinGW-w64 gcc — both
+      # already on PATH on GitHub-hosted runners.
+      - name: Install Linux build deps
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential
+      - name: Show C toolchain
+        shell: bash
+        run: |
+          go version
+          (gcc --version || cc --version || clang --version) 2>&1 | head -1
+      # Bundle the green-engine (ge) + green-compress (greencompress) binaries so a single
+      # codehelper download "just works" on this OS/arch. Their source is vendored under
+      # third_party/ (git subtree), so this builds from the SAME checkout — no secret, no
+      # cross-repo access. Refresh the vendored copies with `git subtree pull` (see
+      # third_party/README.md).
+      - name: Install Rust (bundled green binaries)
+        if: matrix.goos != 'windows' || matrix.goarch != 'arm64'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - name: Setup MSVC (Windows ARM64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: arm64
+      - name: Install Rust (Windows ARM64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - name: Build bundled green binaries
+        if: matrix.goos != 'windows' || matrix.goarch != 'arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ext=""
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          cargo build --release -p ge --manifest-path third_party/green-engine/Cargo.toml --target ${{ matrix.rust_target }}
+          # Workspace root is third_party/green-compress; force target under rust/ for stable paths.
+          CARGO_TARGET_DIR=third_party/green-compress/rust/target \
+            cargo build --release --manifest-path third_party/green-compress/rust/Cargo.toml --target ${{ matrix.rust_target }}
+          mkdir -p green-bin
+          cp "third_party/green-engine/target/${{ matrix.rust_target }}/release/ge${ext}" green-bin/
+          gc_bin=$(find third_party/green-compress/rust/target -type f -name "greencompress${ext}" -path "*/release/*" | head -1)
+          if [ -z "${gc_bin}" ]; then
+            echo "greencompress${ext} not found under rust/target; listing:" >&2
+            find third_party/green-engine/target third_party/green-compress/rust/target -type f 2>/dev/null | head -30 || true
+            exit 1
+          fi
+          cp "${gc_bin}" green-bin/
+      - name: Build bundled green binaries (Windows ARM64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: |
+          cargo build --release -p ge --manifest-path third_party/green-engine/Cargo.toml --target ${{ matrix.rust_target }}
+          $env:CARGO_TARGET_DIR = "third_party/green-compress/rust/target"
+          cargo build --release --manifest-path third_party/green-compress/rust/Cargo.toml --target ${{ matrix.rust_target }}
+          New-Item -ItemType Directory -Force -Path green-bin | Out-Null
+          Copy-Item "third_party/green-engine/target/${{ matrix.rust_target }}/release/ge.exe" green-bin/
+          $gc = Get-ChildItem -Path third_party/green-compress/rust/target -Recurse -Filter greencompress.exe | Select-Object -First 1
+          if (-not $gc) { throw "greencompress.exe not found under rust/target" }
+          Copy-Item $gc.FullName green-bin/
+      - name: Build binaries
+        if: matrix.goos != 'windows' || matrix.goarch != 'arm64'
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION}"
+          ldflags="-s -w -X github.com/VeyrForge/codehelper/internal/version.linkVersion=${version}"
+          ext=""
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          go build -trimpath -tags rod -ldflags "$ldflags" -o "codehelper${ext}"     ./cmd/codehelper
+          go build -trimpath -tags rod -ldflags "$ldflags" -o "codehelper-mcp${ext}" ./cmd/codehelper-mcp
+          dist="codehelper_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir "$dist"
+          mv "codehelper${ext}" "codehelper-mcp${ext}" "$dist"/
+          cp README.md LICENSE "$dist"/ 2>/dev/null || true
+          # Include the green binaries when the bundle step produced them, plus their
+          # BUSL-1.1 license notices.
+          cp green-bin/* "$dist"/ 2>/dev/null || true
+          cp third_party/green-engine/LICENSE   "$dist/LICENSE-ge"           2>/dev/null || true
+          cp third_party/green-compress/LICENSE "$dist/LICENSE-greencompress" 2>/dev/null || true
+          cat > "$dist/INSTALL.txt" <<EOF
+          codehelper ${version} — ${{ matrix.goos }}/${{ matrix.goarch }}
+          =====================================
+
+          1. Extract this folder anywhere, e.g. ~/.local/share/codehelper-${version}/
+
+          2. Add the folder to PATH (once per machine):
+               export PATH="\$HOME/.local/share/codehelper-${version}:\$PATH"
+             Or copy binaries to ~/.local/bin:
+               install -m 0755 codehelper codehelper-mcp ge greencompress ~/.local/bin/
+
+          3. Run global setup (PATH, Cursor skills, browser download, green config):
+               codehelper setup
+
+          4. In each git project you want MCP on:
+               cd your-repo
+               codehelper init
+
+          5. Open the project in Cursor and reload MCP (Settings → MCP → restart codehelper).
+
+          Docs: README.md in this folder, or https://github.com/VeyrForge/codehelper
+          EOF
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            7z a "${dist}.zip" "$dist" >/dev/null
+          else
+            tar -czf "${dist}.tar.gz" "$dist"
+          fi
+      - name: Build binaries (Windows ARM64)
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          & ./scripts/ci-windows-arm64.ps1 -Version $env:VERSION
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            codehelper_*.tar.gz
+            codehelper_*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [resolve, test, build]
+    if: ${{ needs.test.result == 'success' && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write     # keyless cosign + attestations (OIDC; no stored secret)
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Build per-OS universal bundles
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          chmod +x scripts/bundle-universal.sh
+          sh scripts/bundle-universal.sh dist "$VERSION"
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Fail closed if the expected archive globs expand to nothing.
+          shopt -s nullglob
+          files=(codehelper_*.tar.gz codehelper_*.zip)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release archives in dist/ for checksums.txt" >&2
+            ls -la >&2 || true
+            exit 1
+          fi
+          sha256sum "${files[@]}" | tee checksums.txt
+          echo "Checksum entries: $(wc -l < checksums.txt)"
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          notes="docs/RELEASE-v${VERSION}.md"
+          if [ -f "$notes" ]; then
+            cp "$notes" RELEASE_NOTES.md
+          elif [ -f "RELEASE-v${VERSION}.md" ]; then
+            cp "RELEASE-v${VERSION}.md" RELEASE_NOTES.md
+          else
+            printf '%s\n' "# codehelper v${VERSION}" "" "See CHANGELOG.md for details." > RELEASE_NOTES.md
+          fi
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attest build provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: |
+            dist/codehelper_*.tar.gz
+            dist/codehelper_*.zip
+            dist/sbom.cdx.json
+            dist/sbom.spdx.json
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign checksums (cosign keyless)
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle checksums.txt.sigstore.json checksums.txt
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: ${{ needs.resolve.outputs.tag }}
+          generate_release_notes: false
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/codehelper_*.tar.gz
+            dist/codehelper_*.zip
+            dist/checksums.txt
+            dist/sbom.cdx.json
+            dist/sbom.spdx.json

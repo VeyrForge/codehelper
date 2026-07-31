@@ -1,0 +1,24 @@
+---
+import Card from './Card.astro'
+
+export function getStaticPaths() {
+  return [{ params: { slug: 'home' } }]
+}
+
+const title = 'Welcome'
+---
+<html lang="en">
+  <head>
+    <title>{title}</title>
+  </head>
+  <body>
+    <main class="wrap">
+      <Card client:load title={title} />
+      <Widget client:idle />
+    </main>
+  </body>
+</html>
+
+<style>
+  .wrap { max-width: 40rem; }
+</style>

@@ -1,0 +1,3 @@
+#!/usr/bin/env php
+<?php
+// Minimal Symfony console marker for profile/framework detect (no runtime).

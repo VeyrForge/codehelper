@@ -1,0 +1,38 @@
+{
+  "id": "background_job",
+  "triggers": [
+    "job",
+    "queue",
+    "worker",
+    "scheduler",
+    "cron",
+    "task queue",
+    "background task",
+    "celery",
+    "sidekiq",
+    "rabbitmq",
+    "kafka consumer",
+    "sqs",
+    "horizon"
+  ],
+  "requirements": [
+    "Make each job idempotent and safe to re-run on failure.",
+    "Use a stable job id or external key to deduplicate retries.",
+    "Set bounded retries with exponential backoff and a dead-letter destination.",
+    "Persist enough context inside the job payload to survive code changes.",
+    "Add timeouts; jobs must not hang the worker.",
+    "Add tests for happy path, transient failure (retry), and permanent failure."
+  ],
+  "security": [
+    "do not include secrets in job payloads stored in queues",
+    "validate inputs popped off the queue as if from the public boundary"
+  ],
+  "performance": [
+    "batch work where possible; avoid one job per row in tight loops",
+    "size the worker pool to the slowest dependency"
+  ],
+  "verify": [
+    "unit test the job class/function in isolation",
+    "smoke-run the worker with a single test job end-to-end"
+  ]
+}

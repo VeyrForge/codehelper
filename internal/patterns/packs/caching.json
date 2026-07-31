@@ -1,0 +1,33 @@
+{
+  "id": "caching",
+  "triggers": [
+    "cache",
+    "caching",
+    "redis",
+    "memcached",
+    "memoize",
+    "ttl",
+    "invalidate",
+    "etag",
+    "cdn cache"
+  ],
+  "requirements": [
+    "Define an explicit TTL for every cache entry; no 'forever' caches without invalidation.",
+    "Document the exact invalidation event for each cached value.",
+    "Prefer a single source of truth: read-through or write-through, not both ad hoc.",
+    "Namespace cache keys per environment/tenant; never collide across deployments.",
+    "Make the system correct without the cache; treat the cache as a performance hint."
+  ],
+  "security": [
+    "never cache responses that vary by authorization without a per-user key",
+    "do not cache PII or secrets in shared infrastructure caches"
+  ],
+  "performance": [
+    "measure hit rate before and after the change",
+    "avoid stampedes (use single-flight, jitter, or staggered TTL)"
+  ],
+  "verify": [
+    "unit test cache miss, hit, and invalidation paths",
+    "run lint and tests on the changed files"
+  ]
+}

@@ -1,0 +1,45 @@
+# Methodology-lite benchmark container outline (offline competitor policy).
+#
+# Purpose: reproduce Codehelper paired A/B runs when local beds are bind-mounted.
+# Does NOT install or fetch competitor tools from the network.
+#
+# Build (from repo root):
+#   docker build -f scripts/container/Dockerfile.methodology-lite -t codehelper-bench-lite .
+#
+# Run with local beds (read-only mount recommended):
+#   docker run --rm \
+#     -v "$PWD/.testbeds:/beds:ro" \
+#     -e CODEHELPER_TESTBEDS=/beds \
+#     codehelper-bench-lite
+#
+# Fixture-only (no beds):
+#   docker run --rm codehelper-bench-lite --fixture-only
+#
+# Optional local competitor binary (host path must already exist; bind-mount it):
+#   docker run --rm \
+#     -v "$PWD/.testbeds:/beds:ro" \
+#     -v /usr/local/bin/some-tool:/opt/competitor:ro \
+#     -e CODEHELPER_TESTBEDS=/beds \
+#     -e CODEHELPER_COMPETITOR_BIN=/opt/competitor \
+#     codehelper-bench-lite
+#
+# Network: build may need module download once; runtime comparison must not
+# `curl`/`npm`/`pip` competitor installs. Prefer --network=none on run if the
+# image already contains Go modules from a prior build cache.
+
+FROM golang:1.25-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev git \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+ENV CGO_ENABLED=1
+ENV CODEHELPER_TESTBEDS=/beds
+
+# Default entry: methodology-lite scaffold (fixture + beds when /beds has indexes).
+ENTRYPOINT ["scripts/bench-comparison-scaffold.sh"]
+CMD []

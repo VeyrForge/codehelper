@@ -1,0 +1,44 @@
+# Default LF for all text — Linux packaging, bash -n, and cross-platform clones.
+# Windows shell scripts keep CRLF. Binary patterns are explicit for safety.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.7z binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.wasm binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp4 binary
+*.webm binary
+*.db binary
+*.sqlite binary
+*.parquet binary
+*.bin binary
+*.o binary
+*.a binary
+*.lib binary
+*.jar binary
+*.class binary
+*.pyc binary
+*.whl binary
+*.node binary
+*.snap binary
+*.AppImage binary

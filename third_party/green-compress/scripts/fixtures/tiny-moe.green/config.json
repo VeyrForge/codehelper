@@ -1,0 +1,12 @@
+{
+  "architecture": "qwen2moe",
+  "layers": 1,
+  "experts_per_layer": 2,
+  "experts_used_per_token": 2,
+  "hidden_size": 64,
+  "intermediate_size": 128,
+  "source_gguf": "mini-moe-test.gguf",
+  "method": "green_optimal",
+  "export_quant": "F32",
+  "requant": "none"
+}

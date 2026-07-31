@@ -1,0 +1,215 @@
+package mcpsvc
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/VeyrForge/codehelper/internal/graph"
+	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/pkg/types"
+)
+
+// symbolCandidate is one indexed symbol when a bare name matches multiple defs.
+type symbolCandidate struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Loc  string `json:"loc"`
+	Recv string `json:"recv,omitempty"`
+}
+
+// resolveSymbolByName resolves a symbol for context/impact. name may be a sym: id.
+// wantPath disambiguates duplicate names (suffix match on definition path).
+// root enables safe type-like Loc upgrades (line≤1 → on-disk class/module line).
+// Returns (sym, nil, nil) on unique match; (nil, candidates, nil) when ambiguous.
+func resolveSymbolByName(ctx context.Context, st *graph.Store, repoID, name, wantPath string, wantLine int, root string) (*types.Symbol, []symbolCandidate, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, nil, fmt.Errorf("symbol name is required")
+	}
+	if strings.HasPrefix(name, "sym:") {
+		sym, err := st.SymbolByID(ctx, repoID, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sym == nil {
+			return nil, nil, fmt.Errorf("no symbol with id %q", name)
+		}
+		upgradeSymbolDefLine(root, sym)
+		return sym, nil, nil
+	}
+	all, err := st.SymbolsByName(ctx, repoID, name, 200)
+	if err != nil {
+		return nil, nil, err
+	}
+	var exact []types.Symbol
+	for _, s := range all {
+		if s.Name == name {
+			exact = append(exact, s)
+		}
+	}
+	if len(exact) == 0 {
+		return nil, nil, fmt.Errorf("symbol not found: %s", name)
+	}
+	if wantPath != "" || wantLine > 0 {
+		var filtered []types.Symbol
+		for _, s := range exact {
+			if wantPath != "" && !pathMatches(s.Path, wantPath) {
+				continue
+			}
+			if wantLine > 0 && s.LineStart != wantLine {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		exact = filtered
+	}
+	if len(exact) == 1 {
+		sym := &exact[0]
+		upgradeSymbolDefLine(root, sym)
+		return sym, nil, nil
+	}
+	if len(exact) == 0 {
+		return nil, nil, fmt.Errorf("no symbol named %q matched path=%q line=%d", name, wantPath, wantLine)
+	}
+	// Prefer production over sample/test when that leaves a unique match (Nest
+	// sample collisions, FastAPI docs_src, Express examples).
+	if pref := preferNonFixtureSymbols(exact); len(pref) == 1 {
+		sym := &pref[0]
+		upgradeSymbolDefLine(root, sym)
+		return sym, nil, nil
+	} else if len(pref) > 1 {
+		exact = pref
+	}
+	// Framework monorepos often ONLY ship samples — pick a stable canonical
+	// tutorial path so bare impact/context still answers without path=.
+	if canon := preferCanonicalSample(exact); canon != nil {
+		upgradeSymbolDefLine(root, canon)
+		return canon, nil, nil
+	}
+	// Ambiguous production defs: auto-pick the most connected (highest fan-in)
+	// so agents following kickoff→context without path= still get a usable answer.
+	// Clear winner only (≥2× second place, or sole non-zero); otherwise return candidates.
+	if picked := preferHighestFanIn(ctx, st, repoID, exact); picked != nil {
+		upgradeSymbolDefLine(root, picked)
+		return picked, nil, nil
+	}
+	sort.Slice(exact, func(i, j int) bool {
+		fi, fj := isFixtureSymbolPath(exact[i].Path), isFixtureSymbolPath(exact[j].Path)
+		if fi != fj {
+			return !fi && fj // non-fixture first
+		}
+		if exact[i].Path != exact[j].Path {
+			return exact[i].Path < exact[j].Path
+		}
+		return exact[i].LineStart < exact[j].LineStart
+	})
+	cands := make([]symbolCandidate, 0, len(exact))
+	for _, s := range exact {
+		cands = append(cands, symbolCandidate{
+			ID:   s.ID,
+			Name: s.Name,
+			Kind: string(s.Kind),
+			Loc:  symbolDefLoc(root, s),
+			Recv: s.ParentID,
+		})
+	}
+	return nil, cands, nil
+}
+
+func isFixtureSymbolPath(p string) bool {
+	p = strings.ToLower(strings.ReplaceAll(p, "\\", "/"))
+	if review.IsEngineAddonPath(p) {
+		return true
+	}
+	for _, seg := range []string{
+		"/sample/", "/samples/", "/examples/", "/example/", "/docs_src/",
+		"/integration/", "/fixtures/", "/fixture/", "/testdata/",
+		"/test/", "/tests/", "/__tests__/", "/spec/", "/specs/",
+		"/playground/", "/playgrounds/", "/benchmarking/",
+	} {
+		if strings.Contains(p, seg) {
+			return true
+		}
+	}
+	for _, prefix := range []string{
+		"sample/", "samples/", "examples/", "example/", "docs_src/",
+		"integration/", "fixtures/", "test/", "tests/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func preferNonFixtureSymbols(syms []types.Symbol) []types.Symbol {
+	var out []types.Symbol
+	for _, s := range syms {
+		if !isFixtureSymbolPath(s.Path) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// preferCanonicalSample picks sample/01-* (or lexicographically first sample)
+// when every candidate lives under demo/fixture trees.
+func preferCanonicalSample(syms []types.Symbol) *types.Symbol {
+	if len(syms) == 0 {
+		return nil
+	}
+	for _, s := range syms {
+		if !isFixtureSymbolPath(s.Path) {
+			return nil // mixed set — do not auto-pick a sample
+		}
+	}
+	var best *types.Symbol
+	bestScore := 1 << 30
+	for i := range syms {
+		s := &syms[i]
+		score := canonicalSampleScore(s.Path)
+		if score < bestScore {
+			bestScore = score
+			best = s
+		}
+	}
+	return best
+}
+
+// preferHighestFanIn auto-picks the most-referenced exact match when it clearly
+// dominates (sole non-zero fan-in, or ≥2× the runner-up). Returns nil when the
+// race is too close — caller should surface candidates + path=.
+func preferHighestFanIn(ctx context.Context, st *graph.Store, repoID string, syms []types.Symbol) *types.Symbol {
+	if len(syms) < 2 || st == nil {
+		return nil
+	}
+	type scored struct {
+		sym *types.Symbol
+		n   int
+	}
+	rows := make([]scored, 0, len(syms))
+	for i := range syms {
+		n := 0
+		if callers, err := st.CallersOf(ctx, repoID, syms[i].ID); err == nil {
+			n = len(callers)
+		}
+		rows = append(rows, scored{sym: &syms[i], n: n})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].n != rows[j].n {
+			return rows[i].n > rows[j].n
+		}
+		return rows[i].sym.Path < rows[j].sym.Path
+	})
+	best, second := rows[0], rows[1]
+	if best.n == 0 {
+		return nil
+	}
+	if second.n == 0 || best.n >= second.n*2 {
+		return best.sym
+	}
+	return nil
+}

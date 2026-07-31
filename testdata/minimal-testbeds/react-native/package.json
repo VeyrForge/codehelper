@@ -1,0 +1,11 @@
+{
+  "name": "react-native-probe",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.73.0",
+    "@react-navigation/native": "6.1.9",
+    "@react-navigation/native-stack": "6.9.17"
+  }
+}

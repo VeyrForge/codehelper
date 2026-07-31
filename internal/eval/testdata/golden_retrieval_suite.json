@@ -1,0 +1,51 @@
+{
+  "queries": [
+    {
+      "query": "query handler context pack",
+      "must_contain_any_path": [
+        ["internal/mcpsvc/register.go"],
+        ["internal/retrieval/context.go"]
+      ],
+      "top_k": 50
+    },
+    {
+      "query": "hybrid retrieval bm25 vector rrf",
+      "must_contain_path": ["internal/retrieval/hybrid.go"],
+      "top_k": 50
+    },
+    {
+      "query": "mcpimpact Analyze blast radius",
+      "must_contain_any_path": [
+        ["internal/mcpimpact/impact.go"],
+        ["internal/mcpsvc/register.go"]
+      ],
+      "top_k": 50
+    },
+    {
+      "query": "verify argv mode allowed commands timeout",
+      "must_contain_path": ["internal/verify/verify.go"],
+      "top_k": 50
+    },
+    {
+      "query": "ParseTypeScript nextjs route handler",
+      "must_contain_path": ["internal/parser/ts.go"],
+      "top_k": 50
+    },
+    {
+      "query": "ParsePHP laravel wordpress route hook",
+      "must_contain_path": ["internal/parser/php.go"],
+      "top_k": 50
+    },
+    {
+      "query": "ParsePython django fastapi decorator route",
+      "must_contain_path": ["internal/parser/python.go"],
+      "top_k": 50
+    }
+  ],
+  "prompts": [
+    {
+      "prompt_id": "planning_contract",
+      "must_contain": ["VERIFICATION", "FAILURE CONDITIONS", "[UNCERTAIN]"]
+    }
+  ]
+}

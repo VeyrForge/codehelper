@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="green">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Green Engine</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%2314b8a6'/></svg>" />
+  <link rel="stylesheet" href="/ui/style.css?v=21" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="main-sidebar">
+      <div class="brand">
+        <div class="brand-logo">Green Engine</div>
+        <div class="brand-sub">local AI</div>
+      </div>
+      <nav>
+        <ul class="nav-list" role="tablist">
+          <li><button type="button" data-tab="chat" class="active"><span class="nav-icon">💬</span> Chat</button></li>
+          <li><button type="button" data-tab="models"><span class="nav-icon">◈</span> Models</button></li>
+          <li><button type="button" data-tab="activity"><span class="nav-icon">≡</span> Activity</button></li>
+          <li><button type="button" data-tab="setup"><span class="nav-icon">⬡</span> Setup</button></li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="status-line"><span class="status-dot" id="status-dot"></span><span id="status-text">…</span></div>
+        <div id="sidebar-hw" class="truncate"></div>
+      </div>
+    </aside>
+
+    <div class="content" id="main-content">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h2 id="page-title">Chat</h2>
+          <div id="topbar-chat-server" class="topbar-chat-server">
+            <select id="chat-active-model" class="topbar-model truncate" title="Model for this chat"></select>
+            <span id="chat-server-pill" class="pill off truncate">offline</span>
+            <button type="button" class="btn btn-sm primary" id="btn-start-chat-server">Start</button>
+            <button type="button" class="btn btn-sm danger" id="btn-stop-chat-server">Stop</button>
+          </div>
+        </div>
+        <div class="topbar-controls">
+          <div class="compute-bar" title="Auto = shared GPU (~20 layers). GPU = max offload. CPU = no GPU.">
+            <span class="compute-label">Compute</span>
+            <div class="seg-control global-compute" id="global-compute">
+              <button type="button" data-mode="auto" class="active" title="Shared GPU — partial offload, leaves VRAM for desktop">Auto</button>
+              <button type="button" data-mode="cpu" title="CPU only — slowest">CPU</button>
+              <button type="button" data-mode="gpu" title="Max GPU — all layers on GPU">GPU</button>
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-toggle-settings" title="Chat settings">⚙</button>
+        </div>
+      </header>
+
+      <div id="settings-drawer" class="settings-drawer" hidden>
+        <div class="settings-grid">
+          <label>Max reply length
+            <select id="setting-max-tokens">
+              <option value="1024">1k tokens</option>
+              <option value="2048">2k tokens</option>
+              <option value="4096">4k tokens</option>
+              <option value="8192" selected>8k tokens</option>
+              <option value="16384">16k tokens</option>
+            </select>
+          </label>
+          <label>Context window
+            <select id="setting-ctx">
+              <option value="0">Auto (4k / 8k)</option>
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+            </select>
+          </label>
+          <label class="filter-chip">
+            <input type="checkbox" id="setting-auto-continue" checked />
+            Auto-continue when cut off
+          </label>
+          <label>Max continue rounds (code projects)
+            <select id="setting-max-continue">
+              <option value="256">256</option>
+              <option value="1024">1024</option>
+              <option value="4096">4096</option>
+              <option value="8192" selected>8192 (until complete)</option>
+            </select>
+          </label>
+          <label class="filter-chip">
+            <input type="checkbox" id="setting-self-review" checked />
+            Self-review when project completes
+          </label>
+        </div>
+        <p class="hint">Multi-file projects: click <strong>+ New Project</strong>, or say “create wordpress plugin”. Output is NDJSON (<code>{"path","content"}</code> per line, then <code>{"done":true}</code>). Auto-continues until complete.</p>
+      </div>
+
+      <main id="main-panels">
+        <div id="port-warn" class="port-warn"></div>
+
+        <!-- Chat -->
+        <section id="panel-chat" class="panel panel-chat-full active">
+          <div class="chat-layout">
+            <aside class="chat-sidebar">
+              <div class="chat-sidebar-section">
+                <div class="sidebar-section-head">
+                  <strong>Projects</strong>
+                  <button type="button" class="btn btn-sm btn-ghost" id="btn-new-project" title="New project">+</button>
+                </div>
+                <ul id="chat-projects" class="chat-projects"></ul>
+              </div>
+              <div class="chat-sidebar-section">
+                <button type="button" class="btn primary btn-block" id="btn-new-chat">+ New chat</button>
+                <ul id="chat-sessions" class="chat-sessions"></ul>
+                <button type="button" class="btn btn-sm btn-ghost btn-block" id="btn-clear-chats">Clear history</button>
+              </div>
+            </aside>
+            <div class="chat-main">
+              <div id="project-workspace" class="project-workspace hidden">
+                <div class="project-toolbar">
+                  <strong>Project</strong>
+                  <span id="project-status" class="hint">0 files</span>
+                  <div class="project-toolbar-actions">
+                    <button type="button" class="btn btn-sm" id="btn-validate-project">Check syntax</button>
+                    <button type="button" class="btn btn-sm primary" id="btn-download-project">Download ZIP</button>
+                    <button type="button" class="btn btn-sm btn-ghost" id="btn-close-project" title="Hide">×</button>
+                  </div>
+                </div>
+                <div class="project-body">
+                  <ul id="project-files" class="project-files"></ul>
+                  <div class="project-editor-wrap">
+                    <div id="project-editor-path" class="truncate hint"></div>
+                    <textarea id="project-editor" spellcheck="false" placeholder="Select a file…"></textarea>
+                    <div id="project-editor-errors" class="project-editor-errors"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="chat-center">
+              <div class="chat-messages" id="chat-messages">
+                <div class="chat-welcome">
+                  <h3>Green Chat</h3>
+                  <p>Pick a model in the <strong>top bar</strong> → <strong>Start</strong> → ask. Multi-file requests open <strong>Project</strong> above; expand <strong>Thinking</strong> under each reply for live progress.</p>
+                </div>
+              </div>
+              <div class="chat-composer">
+                <div class="composer-controls">
+                  <button type="button" class="btn btn-sm" id="btn-chat-continue" hidden title="Resume">Continue</button>
+                  <button type="button" class="btn btn-sm" id="btn-chat-context" title="System prompt & memory">Prompt</button>
+                  <button type="button" class="btn btn-sm" id="btn-chat-files" title="Saved project files">Files</button>
+                </div>
+                <div id="chat-model-warn" class="chat-model-warn" hidden></div>
+                <div id="chat-context-panel" class="chat-context-panel hidden">
+                  <label>System prompt
+                    <textarea id="chat-system-prompt" rows="3" spellcheck="false" placeholder="Instructions for this chat or project…"></textarea>
+                  </label>
+                  <label>Memory / notes
+                    <textarea id="chat-memory" rows="2" spellcheck="false" placeholder="Facts and context to remember across messages…"></textarea>
+                  </label>
+                  <p class="hint">Saved per chat. Project chats also inherit the project prompt below.</p>
+                </div>
+                <div id="chat-files-panel" class="chat-context-panel hidden">
+                  <p class="hint" id="chat-files-summary">No saved files yet.</p>
+                  <ul id="chat-files-list" class="chat-files-list"></ul>
+                </div>
+                <div class="composer-input-row">
+                  <textarea id="chat-input" rows="1" placeholder="Message… (Enter to send)"></textarea>
+                  <button type="button" class="btn danger" id="btn-chat-stop-gen" hidden title="Stop generation">Stop</button>
+                  <button type="button" class="btn primary" id="btn-chat-send">Send</button>
+                </div>
+              </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Models -->
+        <section id="panel-models" class="panel">
+          <div class="page-intro">
+            <p id="hw-summary" class="hint">Detecting hardware…</p>
+          </div>
+          <div class="card card-compact">
+            <h3>Selected model</h3>
+            <div id="active-model-bar" class="active-model-bar"><span class="hint">Pick a model below.</span></div>
+          </div>
+
+          <div class="model-subtabs">
+            <button type="button" class="active" data-msub="curated">Recommended</button>
+            <button type="button" data-msub="search">Search HF</button>
+            <button type="button" data-msub="downloaded">On disk</button>
+          </div>
+
+          <div id="msub-curated" class="msub-panel active">
+            <div class="grid grid-cards" id="model-recommendations"></div>
+          </div>
+
+          <div id="msub-search" class="msub-panel">
+            <div class="search-row">
+              <input id="hf-search-q" type="search" placeholder="Search GGUF on Hugging Face…" />
+              <button type="button" class="btn primary" id="btn-hf-search">Search</button>
+            </div>
+            <div class="filter-row">
+              <label class="filter-chip"><input type="checkbox" id="filter-fits-only" /> Fits my GPU/RAM</label>
+              <select id="filter-use-case">
+                <option value="">All types</option>
+                <option value="chat">Chat</option>
+                <option value="code">Code</option>
+                <option value="mcp">MCP</option>
+                <option value="quality">7B+</option>
+              </select>
+              <select id="filter-reliability">
+                <option value="">Any source</option>
+                <option value="curated">Curated</option>
+                <option value="official">Official</option>
+              </select>
+            </div>
+            <div class="grid grid-cards" id="hf-search-results"></div>
+          </div>
+
+          <div id="msub-downloaded" class="msub-panel">
+            <div id="downloaded-models" class="grid grid-cards"></div>
+          </div>
+
+          <div class="card card-compact setup-row">
+            <h3>Stack</h3>
+            <div class="btn-row">
+              <button type="button" class="btn primary" id="btn-setup-chat">Pull + chat server</button>
+              <button type="button" class="btn" id="btn-setup-mcp">MCP stack</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Activity (jobs + logs) -->
+        <section id="panel-activity" class="panel">
+          <div class="grid grid-2 activity-grid">
+            <div class="card">
+              <h3>Jobs</h3>
+              <ul class="job-list" id="job-list"></ul>
+            </div>
+            <div class="card card-log">
+              <h3>Output</h3>
+              <div class="log-box" id="log-box"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Setup (health + servers + extras) -->
+        <section id="panel-setup" class="panel">
+          <div class="grid grid-3" id="health-cards"></div>
+          <div class="card card-compact">
+            <h3>Services</h3>
+            <div id="server-summary"></div>
+            <div class="btn-row">
+              <button type="button" class="btn primary" id="btn-servers-start-chat">Start chat</button>
+              <button type="button" class="btn danger btn-server-stop" data-service="chat">Stop chat</button>
+              <button type="button" class="btn btn-server-start" data-service="embed">Embed on</button>
+              <button type="button" class="btn danger btn-server-stop" data-service="embed">Embed off</button>
+              <button type="button" class="btn" data-action="start_mcp">MCP all</button>
+              <button type="button" class="btn danger" data-action="stop_mcp">MCP stop</button>
+            </div>
+          </div>
+          <details class="card card-compact">
+            <summary>Benchmarks</summary>
+            <label for="bench-name">Run</label>
+            <div class="search-row">
+              <select id="bench-name">
+                <option value="portable_bench">portable_bench</option>
+                <option value="kv_bench">kv_bench</option>
+                <option value="axes_bench">axes_bench</option>
+                <option value="energy_bench">energy_bench</option>
+                <option value="mcp">mcp</option>
+              </select>
+              <button type="button" class="btn primary" id="btn-bench">Run</button>
+            </div>
+          </details>
+          <details class="card card-compact">
+            <summary>External UIs</summary>
+            <p class="hint">Point any OpenAI-compatible UI at <code>http://127.0.0.1:8767/v1</code></p>
+            <div class="grid grid-2" id="external-cards"></div>
+            <button type="button" class="btn btn-sm" id="btn-copy-preset">Copy JSON preset</button>
+          </details>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" crossorigin="anonymous"></script>
+  <script src="/ui/markdown.js?v=21"></script>
+  <script src="/ui/project.js?v=21"></script>
+  <script src="/ui/app.js?v=21"></script>
+</body>
+</html>

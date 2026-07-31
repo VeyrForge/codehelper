@@ -1,0 +1,211 @@
+{
+  "format": "green-model",
+  "version": 1,
+  "model": "mini-test.gguf",
+  "source_model": "mini-test.gguf",
+  "architecture": "llama",
+  "arch": "llama",
+  "method": "green_optimal",
+  "methods": [
+    "green_optimal"
+  ],
+  "compression_note": "Dense-complete package; 2D weights re-quantized to Q4_0 baseline. Native generate via Green Engine.",
+  "layers": 1,
+  "experts_per_layer": 0,
+  "experts_used_per_token": 0,
+  "hidden_size": 64,
+  "intermediate_size": 128,
+  "files": {
+    "metadata": "metadata.gguf",
+    "dense": "dense.gguf",
+    "tokenizer": "tokenizer.json"
+  },
+  "tensor_files": [
+    "metadata.gguf",
+    "dense.gguf"
+  ],
+  "config_file": "config.json",
+  "tensors": [
+    {
+      "name": "token_embd.weight",
+      "role": "embedding",
+      "shape": [
+        64,
+        32
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 1152,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "output.weight",
+      "role": "output",
+      "shape": [
+        64,
+        32
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 1152,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.attn_q.weight",
+      "role": "attn_q",
+      "layer": 0,
+      "shape": [
+        64,
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 2304,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.attn_k.weight",
+      "role": "attn_k",
+      "layer": 0,
+      "shape": [
+        64,
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 2304,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.attn_v.weight",
+      "role": "attn_v",
+      "layer": 0,
+      "shape": [
+        64,
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 2304,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.attn_output.weight",
+      "role": "attn_output",
+      "layer": 0,
+      "shape": [
+        64,
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 2304,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.ffn_gate.weight",
+      "role": "ffn_gate",
+      "layer": 0,
+      "shape": [
+        64,
+        128
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 4608,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.ffn_up.weight",
+      "role": "ffn_up",
+      "layer": 0,
+      "shape": [
+        64,
+        128
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 4608,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "blk.0.ffn_down.weight",
+      "role": "ffn_down",
+      "layer": 0,
+      "shape": [
+        128,
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "green_baseline_q4_0",
+      "file": "dense.gguf",
+      "offset": 0,
+      "compressed_size": 4608,
+      "checksum": "sha256:13bc37b53f0c6b94d0ced70842458eb2e285594647ee503c22037cae07a8995b"
+    },
+    {
+      "name": "output_norm.weight",
+      "role": "other",
+      "shape": [
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "F32",
+      "file": "metadata.gguf",
+      "offset": 0,
+      "compressed_size": 256,
+      "checksum": "sha256:9b60081b0d37c632b285c75f113a89adc645bc7730d83fea9e230f980eb04ce6"
+    },
+    {
+      "name": "blk.0.attn_norm.weight",
+      "role": "norm",
+      "layer": 0,
+      "shape": [
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "F32",
+      "file": "metadata.gguf",
+      "offset": 0,
+      "compressed_size": 256,
+      "checksum": "sha256:9b60081b0d37c632b285c75f113a89adc645bc7730d83fea9e230f980eb04ce6"
+    },
+    {
+      "name": "blk.0.ffn_norm.weight",
+      "role": "norm",
+      "layer": 0,
+      "shape": [
+        64
+      ],
+      "source_gguf_type": "F32",
+      "green_compression_type": "F32",
+      "file": "metadata.gguf",
+      "offset": 0,
+      "compressed_size": 256,
+      "checksum": "sha256:9b60081b0d37c632b285c75f113a89adc645bc7730d83fea9e230f980eb04ce6"
+    }
+  ],
+  "expert_tensors_pending": [],
+  "llama_8b_gaps": [
+    "True green repair on float sources; Q4_K passthrough GEMV contract (experimental)",
+    "Quantized / compressed expert greenpack (raw f32 only today)",
+    "HF tokenizer.json / tokenizer_config.json when converting from safetensors",
+    "Native Green Engine full MoE generate loop (FFN path is M4)"
+  ]
+}

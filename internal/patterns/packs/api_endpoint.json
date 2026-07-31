@@ -1,0 +1,40 @@
+{
+  "id": "api_endpoint",
+  "triggers": [
+    "api",
+    "endpoint",
+    "rest",
+    "graphql",
+    "http handler",
+    "route",
+    "controller",
+    "json api",
+    "rpc",
+    "openapi",
+    "webhook"
+  ],
+  "requirements": [
+    "Define request/response DTOs with explicit fields and types (no leaking ORM models).",
+    "Validate every input at the boundary; reject unknown fields when applicable.",
+    "Return a consistent error shape (status, code, message); never raw stack traces.",
+    "Apply authentication/authorization checks before any work.",
+    "Enforce pagination, sort, and limits on collection endpoints.",
+    "Document new routes (OpenAPI, README, or inline) and update the API contract.",
+    "Add tests covering happy path, validation failure, and unauthorized access."
+  ],
+  "security": [
+    "use parameterized queries; never concatenate user input into SQL/NoSQL",
+    "rate-limit public endpoints",
+    "set permissive but explicit CORS (or none) for public APIs",
+    "log a request id for traceability without logging PII"
+  ],
+  "performance": [
+    "no N+1 reads inside the handler; load related entities in batch",
+    "stream large responses instead of buffering the entire payload",
+    "set sensible timeouts on outbound calls"
+  ],
+  "verify": [
+    "run lint and unit tests for changed handler/controller files",
+    "manual or contract test against the new endpoint shape"
+  ]
+}

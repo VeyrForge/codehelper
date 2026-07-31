@@ -1,0 +1,42 @@
+{
+  "beds_run": 1,
+  "generated_at": "2026-07-24T18:18:29Z",
+  "methodology": "mcp-eval-methodology.md §1.1 lite (arms A vs B, objective locate)",
+  "mode": "fixture",
+  "pairs": 1,
+  "results": [
+    {
+      "bed": "001",
+      "kind": "architecture_qa",
+      "task": "How does Authenticate get used?",
+      "arm_b_mcp": {
+        "locate_hit": true,
+        "ms": 10,
+        "tool_calls": 3,
+        "resp_bytes": 3405,
+        "hits": [
+          "Authenticate",
+          "svc/auth.go",
+          "cmd/main.go"
+        ],
+        "preview": "{\n  \"hits\": [\n    {\n      \"id\": \"sym:001:svc/auth.go:4:Authenticate\",\n      \"name\": \"Authenticate\",\n      \"kind\": \"function\",\n      \"loc\": \"svc/auth.go:4\",\n      \"score\": 0.023,\n      \"reasons\": [\n        \"exact_name\",\n        \"centrality\",\n        \"name_field\"\n      ]\n    }\n  ],\n  \"freshness\": {\n    \"indexed_commit\": \"22f282e3b3d362da9aea4d2e18a5123a96d59c94\",\n    \"indexed_at\": \"2026-07-24T18:18:…"
+      },
+      "arm_a_baseline": {
+        "locate_hit": true,
+        "ms": 0,
+        "tool_calls": 1,
+        "resp_bytes": 13936,
+        "hits": [
+          "svc/auth.go",
+          "cmd/main.go"
+        ],
+        "preview": "cmd/main.go\nsvc/auth.go"
+      },
+      "winner": "mcp",
+      "delta_ms_mcp_minus_base": 10
+    }
+  ],
+  "ties": 0,
+  "wins_baseline": 0,
+  "wins_mcp": 1
+}

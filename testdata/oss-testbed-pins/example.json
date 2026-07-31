@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-26T00:00:00Z",
+  "schema_version": 1,
+  "harness": "scripts/prepare-oss-testbeds.sh",
+  "note": "Example pin manifest shape — real pins are written under prepare OUT / .eval-projects.",
+  "beds": [
+    {
+      "bed": "axum",
+      "url": "https://github.com/tokio-rs/axum.git",
+      "pinned_sha": "0704574455272caa79ff3ae8207adf8f620516c9",
+      "commit_sha": "0704574455272caa79ff3ae8207adf8f620516c9",
+      "pin_match": "true",
+      "source": "oss",
+      "path": ".eval-projects/axum",
+      "cold_index_ms": null,
+      "warm_index_ms": null
+    }
+  ]
+}

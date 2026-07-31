@@ -1,0 +1,6 @@
+; Godot-lite stub project (no engine download). Sibling agents may add scenes.
+config_version=5
+
+[application]
+config/name="GodotLiteBed"
+run/main_scene="res://scripts/player.gd"

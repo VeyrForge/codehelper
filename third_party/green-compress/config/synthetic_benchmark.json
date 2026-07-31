@@ -1,0 +1,59 @@
+{
+  "name": "synthetic_matrix",
+  "goal_method": "green_optimal",
+  "output_dir": "out/benchmark/synthetic",
+  "matrix": {
+    "source": "generated",
+    "rows": 512,
+    "cols": 512,
+    "seed": 10,
+    "weight_path": "out/benchmark/synthetic/w.mx"
+  },
+  "activations": {
+    "source": "generated",
+    "rows": 64,
+    "seed": 11,
+    "path": "out/benchmark/synthetic/x.mx"
+  },
+  "q4": {
+    "block": 32
+  },
+  "repair_defaults": {
+    "iters": 8,
+    "seed": 3,
+    "fit-order": "sparse-first",
+    "sparse_mode": "imatrix",
+    "rank": 4,
+    "sparse_frac": 0.005
+  },
+  "benchmark": {
+    "matmul_iters": 5
+  },
+  "methods": [
+    {
+      "id": "fp32_reference",
+      "type": "fp32",
+      "description": "Uncompressed FP32 reference (100%)"
+    },
+    {
+      "id": "green_smart",
+      "type": "green_smart",
+      "description": "AWQ Q8 + imatrix repair baseline"
+    },
+    {
+      "id": "green_adaptive",
+      "type": "green_adaptive",
+      "description": "Skip repair when Q8 >= 99.50%"
+    },
+    {
+      "id": "green_optimal",
+      "type": "green_optimal",
+      "description": "Recommended: 99.50% floor + skip + policy"
+    },
+    {
+      "id": "green_spqr_svd",
+      "type": "green_spqr_svd",
+      "description": "Escalation path when a tensor needs more quality"
+    }
+  ]
+}

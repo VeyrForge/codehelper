@@ -1,0 +1,9 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Contracts stub API", "version": "0.1.0" },
+  "paths": {
+    "/orders": { "get": { "summary": "List orders" } },
+    "/orders/{id}": { "get": { "summary": "Get order" } },
+    "/health": { "get": { "summary": "Health" } }
+  }
+}

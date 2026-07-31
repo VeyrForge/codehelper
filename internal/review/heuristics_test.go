@@ -1,0 +1,160 @@
+package review
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestIsCodeSourceFile(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		// Sources we DO want regression tests for.
+		{"internal/mcpsvc/register.go", true},
+		{"internal/agent/loop.go", true},
+		{"vscode-extension/src/coreClient.ts", true},
+		{"scripts/build-go.mjs", true},
+		{"pkg/types/types.go", true},
+
+		// Not source.
+		{".gitignore", false},
+		{".vscodeignore", false},
+		{".env.local", false},
+		{"package.json", false},
+		{"package-lock.json", false},
+		{"vscode-extension/package-lock.json", false},
+		{"tsconfig.json", false},
+		{"go.sum", false},
+		{"README.md", false},
+		{"docs/intro.md", false},
+		{"vscode-extension/media/panel.css", false},
+		{"assets/logo.svg", false},
+
+		// Generated / vendored / compiled.
+		{"vscode-extension/out/extension.js", false},
+		{"vscode-extension/out/coreClient.js", false},
+		{"dist/index.js", false},
+		{"build/main.js", false},
+		{"node_modules/lodash/index.js", false},
+		{"vendor/example/example.go", false},
+		{"target/debug/foo.rs", false},
+		{"coverage/lcov-report/index.html", false},
+
+		// Fixture / demo trees (secondary noise) — not production contracts.
+		{"testdata/minimal-testbeds/wordpress/wp-content/plugins/probe-plugin/probe-plugin.php", false},
+		{"examples/auth/index.js", false},
+
+		// Vendored / bundled third-party trees — not first-party contracts.
+		{"third_party/green-compress/scripts/gguf_util.py", false},
+	}
+	for _, tc := range tests {
+		got := IsCodeSourceFile(tc.path)
+		if got != tc.want {
+			t.Errorf("IsCodeSourceFile(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestIsTestPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"internal/mcpsvc/workspace_tools_test.go", true},
+		{"internal/review/heuristics_test.go", true},
+		{"src/__tests__/foo.test.ts", true},
+		{"src/foo.spec.ts", true},
+		{"src/foo.test.tsx", true},
+		{"app/spec/users_spec.rb", true},
+		{"tests/integration/foo.py", true},
+		{"test/foo.py", true},
+		{"src/test_helpers.py", true},
+
+		{"internal/mcpsvc/workspace_tools.go", false},
+		{"src/coreClient.ts", false},
+		{"vscode-extension/test-runner.json", false},
+	}
+	for _, tc := range tests {
+		got := IsTestPath(tc.path)
+		if got != tc.want {
+			t.Errorf("IsTestPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestIsSecondaryNoisePath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"docs_src/dependencies/tutorial001.py", true},
+		{"sample/01-cats-app/main.ts", true},
+		{"integration/injector/e2e.ts", true},
+		{"examples/hello/index.js", true},
+		{"test/acceptance/route.js", true},
+		{"packages/svelte/tests/snapshot/samples/x/_expected/main.js", true},
+		{"fixtures/data.json", true},
+		{".github/testdata/index.html", true},
+		{"codehelper/internal/daemon/lock.go", true},
+		{"codehelper/internal/mcpsvc/register.go", true},
+		{"cmd/codehelper/main.go", false},
+		{"internal/daemon/lock.go", false},
+		{"packages/core/src/injector.ts", false},
+		{"fastapi/applications.py", false},
+		{"lib/application.js", false},
+		{"addons/vendor/plugin.gd", true},
+		{"scripts/player.gd", false},
+		{"Library/ArtifactDB/artifact", true},
+		{"Assets/Scripts/Player.cs", false},
+		{"Plugins/Marketplace/Foo/Foo.Build.cs", true},
+		{"Source/MyGame/MyGameCharacter.cpp", false},
+	}
+	for _, tc := range tests {
+		if got := IsSecondaryNoisePath(tc.path); got != tc.want {
+			t.Errorf("IsSecondaryNoisePath(%q)=%v want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestIsNestedForeignToolTree(t *testing.T) {
+	if !IsNestedForeignToolTree("codehelper/internal/review/release_readiness.go") {
+		t.Fatal("top-level nested codehelper/")
+	}
+	if IsNestedForeignToolTree("cmd/codehelper/main.go") {
+		t.Fatal("cmd/codehelper must stay searchable")
+	}
+	if IsNestedForeignToolTree("internal/mcpsvc/register.go") {
+		t.Fatal("first-party codehelper sources must not match")
+	}
+}
+
+func TestLooksLikeNestedCodehelperProduct(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "codehelper")
+	if err := os.MkdirAll(filepath.Join(nested, "internal", "mcpsvc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !LooksLikeNestedCodehelperProduct(nested) {
+		t.Fatal("expected nested product with internal/mcpsvc")
+	}
+	empty := filepath.Join(dir, "other")
+	_ = os.MkdirAll(empty, 0o755)
+	if LooksLikeNestedCodehelperProduct(empty) {
+		t.Fatal("empty dir must not look like codehelper product")
+	}
+}
+
+func TestIsBehavioralSymbolKind(t *testing.T) {
+	for _, k := range []string{"function", "method", "FUNCTION", " Method "} {
+		if !IsBehavioralSymbolKind(k) {
+			t.Errorf("IsBehavioralSymbolKind(%q) = false, want true", k)
+		}
+	}
+	for _, k := range []string{"class", "interface", "type_alias", "enum", "namespace", "variable", "unknown", ""} {
+		if IsBehavioralSymbolKind(k) {
+			t.Errorf("IsBehavioralSymbolKind(%q) = true, want false", k)
+		}
+	}
+}

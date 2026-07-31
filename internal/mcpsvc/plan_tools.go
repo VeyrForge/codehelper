@@ -1,0 +1,415 @@
+package mcpsvc
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/VeyrForge/codehelper/internal/freshness"
+	"github.com/VeyrForge/codehelper/internal/mcpimpact"
+	"github.com/VeyrForge/codehelper/internal/memory"
+	"github.com/VeyrForge/codehelper/internal/profile"
+	"github.com/VeyrForge/codehelper/internal/registry"
+	"github.com/VeyrForge/codehelper/internal/retrieval"
+	"github.com/VeyrForge/codehelper/internal/review"
+	"github.com/VeyrForge/codehelper/internal/security"
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// plan is an architect-mode planner. It does the pre-work a senior engineer does
+// BEFORE writing code — check what already exists, weigh the blast radius, frame
+// the decisions, and lay out steps — grounded in the actual index, so the LLM
+// spends its reasoning on the change, not on rediscovering the codebase. It is
+// deliberately ONE role-parameterized tool (not five) to avoid tool overload.
+type planResponse struct {
+	Task                 string           `json:"task"`
+	Role                 string           `json:"role"`
+	AlreadyExists        string           `json:"already_exists"`
+	ReuseCandidates      []reuseCandidate `json:"reuse_candidates,omitempty"`
+	ImpactOfTop          *scoutImpact     `json:"impact_of_top,omitempty"`
+	DuplicationRisk      []string         `json:"duplication_risk,omitempty"`
+	Placement            []string         `json:"placement,omitempty"`
+	DecisionPoints       []string         `json:"decision_points"`
+	PriorDecisions       []string         `json:"prior_decisions,omitempty"`
+	Considerations       []string         `json:"considerations"`
+	Steps                []string         `json:"steps"`
+	Verification         []string         `json:"verification,omitempty"`
+	Findings             []auditFinding   `json:"findings,omitempty"`
+	FindingsMode         string           `json:"findings_mode,omitempty"`
+	Abstain              string           `json:"abstain,omitempty"`
+	WhatNext             string           `json:"what_next,omitempty"`
+	NextQueries          []string         `json:"next_queries,omitempty"`
+	RecommendedNextTools []string         `json:"recommended_next_tools,omitempty"`
+	ProjectShape         string           `json:"project_shape,omitempty"`
+	Freshness            string           `json:"freshness,omitempty"`
+	ParamCorrection      string           `json:"param_correction,omitempty"`
+	Note                 string           `json:"note"`
+}
+
+func planHandler(reg *registry.Registry) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.GetArguments()
+		task, taskNote := resolveKickoffTask(args)
+		if task == "" {
+			return emptyTaskRecovery("plan"), nil
+		}
+		role := strings.ToLower(strings.TrimSpace(argString(args, "role")))
+		role = inferRoleFromTask(role, task)
+		repo, err := resolveRepoInitialized(ctx, reg, argString(args, "repo"))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		st, err := openGraph(repo.RootPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		defer st.Close()
+
+		// Reuse-first: rank existing symbols by relevance + centrality, exactly like
+		// scout, so the most load-bearing match that already does this surfaces.
+		// Rank by the SUBJECT, not the imperative verb: "add caching to docs" should
+		// surface caching/docs, not every symbol named Add. Fall back to the full task
+		// when stripping verbs/stopwords leaves nothing.
+		queryStr, tokens := task, strings.Fields(strings.ToLower(task))
+		if subj := taskSubjectTokens(task); len(subj) > 0 {
+			queryStr, tokens = strings.Join(subj, " "), subj
+		}
+		hits, err := retrieval.QueryHybridWithOptions(ctx, st, repo.Name, queryStr, reuseHitPool(6), retrieval.MCPQueryOptions(
+			repo.RootPath, "", tokens, nil,
+		))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		hits, _ = demoteNoiseForQuery(task, hits)
+		hits = demoteIntentMismatchedHits(task, hits)
+		if hasAuthLocateIntent(task) {
+			hits = preferSecurityHits(hits, task)
+		}
+		// Security/perf: demote CSS/DI/Schema noise before framing reuse.
+		hits = filterAuditHits(hits, role)
+		hits = capRankedHits(hits, 6)
+		upgradeHitDefLines(repo.RootPath, hits)
+
+		out := planResponse{Task: task, Role: role}
+		for _, h := range hits {
+			out.ReuseCandidates = append(out.ReuseCandidates, reuseCandidate{
+				Name: h.Symbol.Name, Kind: string(h.Symbol.Kind),
+				Loc:       fmt.Sprintf("%s:%d", h.Symbol.Path, h.Symbol.LineStart),
+				Recv:      h.Symbol.ParentID,
+				Signature: h.Symbol.Signature,
+				Callers:   callerCountOf(ctx, st, repo.Name, h.Symbol.ID),
+				Score:     round3(h.Score),
+			})
+		}
+		out.ReuseCandidates = dropStyleReuseCandidates(out.ReuseCandidates)
+		if role == "" || role == "feature" || role == "refactor" {
+			out.ReuseCandidates = preferFeatureReuse(out.ReuseCandidates, task)
+			out.ReuseCandidates = seedHealthRouteCandidates(repo.RootPath, out.ReuseCandidates, task)
+		}
+
+		var top *reuseCandidate
+		if len(out.ReuseCandidates) > 0 {
+			top = &out.ReuseCandidates[0]
+		}
+		// Frame the candidates as a lexical GUESS to verify, never an assertion. The
+		// top hit can be a spurious word match (a perf helper matching "hot", say), so
+		// "Likely YES — X" misleads; the LLM judges which (if any) fits from the
+		// candidate names/signatures + context.
+		if top == nil {
+			out.AlreadyExists = "No close match — likely new functionality. Check imports/conventions via project_context before writing."
+		} else {
+			names := make([]string, 0, 3)
+			for i := range out.ReuseCandidates {
+				if i >= 3 {
+					break
+				}
+				names = append(names, "`"+out.ReuseCandidates[i].Name+"`")
+			}
+			out.AlreadyExists = fmt.Sprintf("Closest existing code (ranked, may not be relevant): %s. Confirm with `context` which — if any — actually fits before adding new.", strings.Join(names, ", "))
+		}
+
+		// Gather real signals from the closest match's blast radius: risk tier,
+		// dependent count, how many tests cover it, and how many packages it spans.
+		// These drive the task-specific decision_points instead of a static list.
+		sig := taskSignals{Top: top}
+		primaryLang := ""
+		if pr, perr := profile.Read(repo.RootPath); perr == nil && pr != nil {
+			primaryLang = primaryLanguageOf(pr.PrimaryLanguage, pr.Languages)
+		}
+		graphConf := ""
+		if len(hits) > 0 {
+			t := hits[0].Symbol
+			if res, aerr := mcpimpact.Analyze(ctx, st, repo.Name, t.ID, 4, "upstream"); aerr == nil && res != nil {
+				tests := 0
+				for _, n := range res.Nodes {
+					if n.Depth > 0 && review.IsTestPath(n.Path) && isTestSymbolKind(n.Kind) {
+						tests++
+					}
+				}
+				graphConf = callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
+				imp := &scoutImpact{
+					Target: t.Name, RiskTier: res.RiskTier,
+					Dependents: len(res.Nodes) - 1, Tests: tests, Confidence: graphConf,
+				}
+				sanitizeScoutImpactForSparse(imp)
+				sig.RiskTier = imp.RiskTier
+				sig.Dependents = imp.Dependents
+				sig.TestsOnTop = tests
+				sig.PkgsSpanned = distinctPkgs(res.Nodes)
+				sig.SparseGraph = isLowCallGraphConfidence(graphConf) || isMediumCallGraphConfidence(graphConf)
+				out.ImpactOfTop = imp
+			}
+		}
+		// Domains: match the task text AND the candidate paths so a hit in
+		// internal/auth triggers the auth question even if the task didn't say "auth".
+		candPaths := make([]string, 0, len(out.ReuseCandidates))
+		for _, c := range out.ReuseCandidates {
+			candPaths = append(candPaths, c.Loc)
+		}
+		sig.Domains = detectDomains(task, candPaths)
+
+		out.DuplicationRisk = deriveDuplication(task, out.ReuseCandidates)
+		out.Placement = derivePlacement(sig)
+		out.PriorDecisions = relevantPriorDecisions(repo.RootPath, task)
+		out.DecisionPoints = deriveDecisionPoints(role, sig)
+		out.Considerations = deriveConsiderations(role, sig)
+		out.Steps = planSteps(role, top)
+
+		if pr, perr := profile.Read(repo.RootPath); perr == nil && pr != nil {
+			out.Verification = uniqueTrimmedStrings(pr.LintCommands, pr.TestCommands)
+		}
+		if fresh := freshness.Inspect(repo.RootPath); fresh.Stale {
+			out.Freshness = "index may be stale (" + fresh.StaleReason + ") — re-run analyze for accurate reuse/impact"
+		}
+		out.Note = "Architect scaffolding: it gathers what exists and frames the decisions; the reasoning is yours. Resolve the decision_points (ask the user when they're genuine choices), then follow the steps — using context/change_kit on chosen symbols and impact/test_impact before editing."
+
+		if role == "" || role == "feature" || role == "refactor" {
+			if note := featureEndpointAbstainNote(task, security.DetectProjectShape(repo.RootPath), repo.RootPath, out.ReuseCandidates); note != "" {
+				out.Abstain = note
+				out.Note = note + " " + out.Note
+				out.ReuseCandidates = clearNonHealthReuseForAbstain(out.ReuseCandidates, note)
+				out.ReuseCandidates = seedNonHTTPHealthEquivalent(repo.RootPath, out.ReuseCandidates)
+				if len(out.ReuseCandidates) == 0 {
+					top = nil
+					out.ImpactOfTop = nil
+				} else {
+					top = &out.ReuseCandidates[0]
+				}
+			}
+		}
+
+		// role=security|performance: findings mode (grounded sinks) or clear abstain.
+		findings, mode, abstain := applyFindingsMode(role, repo.RootPath, task, &out.ReuseCandidates, &out.AlreadyExists, &out.Note, &out.Steps)
+		out.Findings, out.FindingsMode = findings, mode
+		if abstain != "" {
+			out.Abstain = abstain
+		}
+		shape := security.DetectProjectShape(repo.RootPath)
+		out.ProjectShape = string(shape)
+		// Refresh top/impact after findings-mode may have cleared reuse.
+		if len(out.ReuseCandidates) == 0 {
+			out.ImpactOfTop = nil
+			top = nil
+		} else {
+			top = &out.ReuseCandidates[0]
+		}
+		out.NextQueries = vibeNextQueries(role, shape, out.Abstain != "", task, repo.RootPath)
+		if role == "performance" && len(out.Findings) > 0 {
+			out.NextQueries = preferPerfFindingNextQueries(out.NextQueries, out.Findings)
+		}
+		out.WhatNext = buildWhatNext(role, top, out.Findings, out.Abstain, out.NextQueries)
+		if graphConf == "" && out.ImpactOfTop != nil {
+			graphConf = out.ImpactOfTop.Confidence
+		}
+		if graphConf == "" {
+			graphConf = callGraphConfidenceLang(ctx, st, repo.Name, primaryLang)
+		}
+		if out.Abstain == "" {
+			out.WhatNext = applySparseWhatNextCaution(out.WhatNext, graphConf)
+			out.WhatNext = applyMediumWhatNextCaution(out.WhatNext, graphConf)
+		}
+		if isMediumCallGraphConfidence(graphConf) {
+			medNote := "Thinner call graph (MEDIUM) — callers may be incomplete; prefer path= / Type.Method; empty fanout ≠ isolation."
+			if !strings.Contains(strings.ToLower(out.Note), "thinner call graph") &&
+				!strings.Contains(strings.ToLower(out.Note), "medium call graph") {
+				out.Note = medNote + " " + out.Note
+			}
+		} else if isLowCallGraphConfidence(graphConf) {
+			sparseNote := "SPARSE CALL GRAPH — call_graph_confidence=LOW; do NOT treat impact_of_top risk_tier/dependents as safe-to-edit isolation."
+			if !strings.Contains(strings.ToLower(out.Note), "safe-to-edit isolation") &&
+				!strings.Contains(strings.ToLower(out.Note), "call_graph_confidence=low") {
+				out.Note = sparseNote + " " + out.Note
+			}
+		}
+		if taskNote != "" {
+			out.ParamCorrection = taskNote
+			out.Note = taskNote + " " + out.Note
+		}
+		out.RecommendedNextTools = vibeRecommendedTools(role, top, out.Abstain != "")
+		// Simple vibe: drop decision bulk that scares juniors (setup tax analogue).
+		if shouldSuppressSetupTax(task, role) && (role == "" || role == "feature") {
+			out.DecisionPoints = nil
+			out.Considerations = nil
+		}
+
+		return mustToolResultFormatted(scrubHostBleedPayload(out, repo.Name), resolveFormat(args))
+	}
+}
+
+// relevantPriorDecisions surfaces ADR-style decisions recorded via agent_memory
+// that match this task, so the planner recalls "why we did it this way" from
+// earlier sessions instead of silently reversing a considered choice. Best-effort
+// and bounded; a missing/empty memory file yields nothing.
+func relevantPriorDecisions(repoRoot, task string) []string {
+	hits, err := memory.Open(repoRoot).Search(task, 3)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, h := range hits {
+		if h.Type == "decision" {
+			out = append(out, h.Summary)
+		}
+	}
+	return out
+}
+
+// taskSubjectTokens drops imperative verbs, stopwords, and vague modifiers so
+// plan/scout rank by the SUBJECT of the task ("caching", "docs") rather than the
+// action verb ("add"), casual filler ("i wanna…"), or a non-identifying modifier
+// ("hot", "fast"). The word set is retrieval.IsCommonWord — the same definition
+// the ranker demotes — so query/scout/plan all parse a task identically. Robust
+// to informal phrasing and light typos.
+func taskSubjectTokens(task string) []string {
+	var out []string
+	for _, w := range strings.Fields(strings.ToLower(task)) {
+		w = strings.Trim(w, ".,:;!?\"'()`")
+		if len(w) < 2 || retrieval.IsCommonWord(w) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// roleConsiderations returns the expert checklist for a role. Security and
+// performance basics are always present because "is it secure / performant" is
+// part of every change.
+func roleConsiderations(role string) []string {
+	base := map[string][]string{
+		"architect": {
+			"Placement: which package/layer keeps coupling low and the dependency direction inward?",
+			"Does this cross a boundary (ui/domain/data)? Don't let inner layers depend on outer.",
+			"Is a new abstraction warranted, or would it add indirection without payoff?",
+			"What public contract changes, and who depends on it (run impact)?",
+		},
+		"security": {
+			"Validate and bound every external input at the trust boundary.",
+			"AuthN/AuthZ: who may invoke this, and is the check enforced server-side?",
+			"Avoid injection (SQL/command/template) — use parameterized/escaped APIs.",
+			"No secrets in code or logs; grant least privilege for any new capability.",
+		},
+		"performance": {
+			"Hot path or rare? Estimate input size/frequency before optimizing.",
+			"Call `hotspots` (churn × centrality) to pick where perf work pays off.",
+			"Avoid N+1 queries/scans and accidental O(n^2) over large sets.",
+			"Bound memory; stream/paginate large results; reuse buffers on hot paths.",
+			"After edits: `impact` + `test_impact` on changed hotspot symbols; add a benchmark if load-bearing.",
+		},
+		"refactor": {
+			"Behavior must not change — lock it with characterization tests first.",
+			"Refactor in small, separately-verifiable steps; keep the diff reviewable.",
+			"Update every call site (run impact) and delete now-dead code (dead_code).",
+		},
+		"feature": {
+			"Reuse before adding: extend the closest existing symbol if it fits.",
+			"Keep public contracts unless intentionally breaking them.",
+			"Add/extend tests for the new behavior, including edge cases.",
+		},
+	}
+	c := base[role]
+	if c == nil {
+		c = base["feature"]
+	}
+	out := append([]string{}, c...)
+	if role != "security" {
+		out = append(out, "Security: validate inputs, enforce authz, avoid injection/secret leakage.")
+	}
+	if role != "performance" {
+		out = append(out, "Performance: avoid N+1 / O(n^2) / unbounded memory on the common path; use `hotspots` for hot-path targets.")
+	}
+	return out
+}
+
+func roleDecisionPoints(role string) []string {
+	switch role {
+	case "architect":
+		return []string{"Which module/layer should own this, and what is the dependency direction?", "Concrete function or an interface/abstraction — is a seam actually needed yet?"}
+	case "security":
+		return []string{"What is the trust boundary and threat model for this change?", "Does it touch auth, secrets, payments, or user data (treat as high-risk)?"}
+	case "performance":
+		return []string{"Is this on a hot path? What is the expected input size and call frequency?", "Correctness-first then measure, or is an up-front benchmark required?"}
+	case "refactor":
+		return []string{"Is current behavior covered by tests, or must characterization tests come first?", "One big refactor, or a sequence of small, individually-verifiable steps?"}
+	default:
+		return []string{"What is the minimal version that satisfies the request (MVP), and what is explicitly out of scope?"}
+	}
+}
+
+func planSteps(role string, top *reuseCandidate) []string {
+	var steps []string
+	if top != nil {
+		steps = append(steps, fmt.Sprintf("Confirm reuse: run `context %s` for its code + callers; extend it if it fits the task.", top.Name))
+	} else {
+		steps = append(steps, "Confirm nothing existing already does this (scout/query) before writing new code.")
+	}
+	steps = append(steps,
+		"Run `impact` (and `test_impact`) on anything you will change to see blast radius + the tests to run.",
+		"Implement the smallest change that satisfies the task; keep public contracts unless intentionally breaking them.",
+		"Run `diagnostics`, then the verification commands; add/extend tests for the new behavior.",
+	)
+	switch role {
+	case "architect":
+		steps = append([]string{
+			"Map the path with `investigate recipe=architecture` or `trace`/`context`/`impact` on the closest reuse candidate (prefer methods over leaf types).",
+			"Resolve decision_points and placement WITH the user — cite symbols/paths; do not edit yet.",
+			"Once accepted: `change_kit` → smallest patch → diagnostics → review_diff → verify → finish_check.",
+		}, steps...)
+	case "feature", "":
+		kit := "Run `scout` (or reuse kickoff hits) then `change_kit` on the chosen symbol BEFORE editing — source + callers + tests in one call."
+		if top != nil {
+			kit = fmt.Sprintf("Run `change_kit` target=%s BEFORE editing — source + every call site + covering tests in one call.", top.Name)
+		}
+		steps = append([]string{
+			kit,
+			"Smallest patch only (health/request-id style): extend existing handler/middleware/helper; do not add *_v2 duplicates.",
+			"After edit: diagnostics → review_diff → verify (argv) → finish_check — claim done only when can_claim_done=true.",
+		}, steps...)
+	case "performance":
+		steps = append(steps,
+			"Call `hotspots` to find churn×centrality files on the hot path before optimizing.",
+			"Run `impact` + `test_impact` on any hotspot symbol you change; measure before/after.",
+			"Performance pass: confirm no N+1/O(n^2) on the common path; measure if hot.",
+		)
+	case "security":
+		steps = append(steps,
+			"Security pass: run `review` / `review_diff` (include_security) for injection/secrets/eval smells.",
+			"Confirm authz on every new entrypoint; no secrets in code or logs.",
+		)
+	}
+	return steps
+}
+
+// RegisterPlanTools registers the architect-mode planner.
+func RegisterPlanTools(s *server.MCPServer, reg *registry.Registry) {
+	s.AddTool(mcp.NewTool("plan",
+		mcp.WithDescription("Architect-mode planner: turn a task into a grounded plan BEFORE writing code — reuse candidates, blast radius, decision_points, role checklist, steps + verify cmds. role=security|performance switches to FINDINGS mode: grounded sink/hotspot candidates (or clear abstain) — never ranks CSS selectors, DI inject* helpers, or Schema migrations as audit targets. role=architect = design Q&A (cite symbols; no edit until accepted; pairs with investigate recipe=architecture). Other roles: refactor|feature (default). Prefer kickoff for the same pack plus orient/docs. PARAM: task= (alias query= accepted with param_correction)."),
+		mcp.WithString("task", mcp.Description("What you want to build/change/investigate, in natural language (preferred)")),
+		mcp.WithString("query", mcp.Description("Alias for task (accepted; prefer task=)")),
+		mcp.WithString("role", mcp.Description("Expert lens: architect (design Q&A) | security | performance | refactor | feature (default)")),
+		mcp.WithString("repo", mcp.Description("Repository name")),
+		mcp.WithString("format", mcp.Description("Response text encoding: toon (default) | json")),
+		annotReadOnlyClosedWorld(),
+	), timedTool("plan", planHandler(reg)))
+}

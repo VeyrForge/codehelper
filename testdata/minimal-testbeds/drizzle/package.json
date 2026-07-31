@@ -1,0 +1,8 @@
+{
+  "name": "drizzle-probe",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "drizzle-orm": "0.29.0"
+  }
+}

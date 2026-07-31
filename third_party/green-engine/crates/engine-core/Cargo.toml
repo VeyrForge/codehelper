@@ -1,0 +1,240 @@
+[package]
+name = "engine-core"
+version = "1.1.1"
+edition = "2021"
+description = "Green Engine core: dynamic MoE expert scheduler (cache + predictor + prefetch)"
+license = "BUSL-1.1"
+
+[features]
+default = []
+# GPU/C++ backend over FFI; links the `kernels` crate's CUDA/HIP .so. Off by default so the
+# CPU build needs no GPU toolkit.
+gpu = []
+# Real Green Compress formats (Q8 + low-rank/sparse repair) as a compressed expert tier. Off by
+# default so the core build stays dependency-free; `--features green` pulls the sibling crate.
+green = ["dep:greencompress"]
+
+[dependencies]
+green-format = { path = "../green-format", version = "0.2.0" }
+memmap2 = "0.9.11"
+rayon = "1.10.0"
+serde_json = "1.0.140"
+# Sibling compression lab — only compiled under `--features green` (see `src/green.rs`).
+greencompress = { path = "../../../green-compress/rust", optional = true }
+
+[dev-dependencies]
+tempfile = "3.20.0"
+green-format = { path = "../green-format", version = "0.2.0" }
+
+[lib]
+name = "engine_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "green_bench"
+path = "src/bin/green_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "predict_bench"
+path = "src/bin/predict_bench.rs"
+
+[[bin]]
+name = "predict_hidden_bench"
+path = "src/bin/predict_hidden_bench.rs"
+
+[[bin]]
+name = "compare_bench"
+path = "src/bin/compare_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "quality_bench"
+path = "src/bin/quality_bench.rs"
+
+[[bin]]
+name = "frontier_bench"
+path = "src/bin/frontier_bench.rs"
+
+[[bin]]
+name = "full_bench"
+path = "src/bin/full_bench.rs"
+required-features = ["green"]
+
+[[bin]]
+name = "mixed_bench"
+path = "src/bin/mixed_bench.rs"
+
+[[bin]]
+name = "matvec_bench"
+path = "src/bin/matvec_bench.rs"
+
+[[bin]]
+name = "decode_1b_bench"
+path = "src/bin/decode_1b_bench.rs"
+
+[[bin]]
+name = "diag_q4km_prefill"
+path = "src/bin/diag_q4km_prefill.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "gemv_dot_microbench"
+path = "src/bin/gemv_dot_microbench.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ge_q4_gemv_bench"
+path = "src/bin/ge_q4_gemv_bench.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dump_shapes"
+path = "src/bin/dump_shapes.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "gemv_check"
+path = "src/bin/gemv_check.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "quality_smoke"
+path = "src/bin/quality_smoke.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "rss_probe"
+path = "src/bin/rss_probe.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "emb_check"
+path = "src/bin/emb_check.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "diag_forward"
+path = "src/bin/diag_forward.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "diag_logits"
+path = "src/bin/diag_logits.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "diag_norms"
+path = "src/bin/diag_norms.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "diag_bos"
+path = "src/bin/diag_bos.rs"
+
+
+[[bin]]
+name = "diag_q4"
+path = "src/bin/diag_q4.rs"
+
+[[bin]]
+name = "diag_chat"
+path = "src/bin/diag_chat.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "diag_green_logits"
+path = "src/bin/diag_green_logits.rs"
+test = false
+doc = false
+
+
+[[bin]]
+name = "diag_mono_vs_green"
+path = "src/bin/diag_mono_vs_green.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "portable_bench"
+path = "src/bin/portable_bench.rs"
+
+[[bin]]
+name = "paged_bench"
+path = "src/bin/paged_bench.rs"
+
+[[bin]]
+name = "decode_loop"
+path = "src/bin/decode_loop.rs"
+
+[[bin]]
+name = "hw_projection"
+path = "src/bin/hw_projection.rs"
+
+[[bin]]
+name = "kernel_bench"
+path = "src/bin/kernel_bench.rs"
+
+[[bin]]
+name = "dense_bench"
+path = "src/bin/dense_bench.rs"
+
+[[bin]]
+name = "het_bench"
+path = "src/bin/het_bench.rs"
+
+[[bin]]
+name = "runtime_bench"
+path = "src/bin/runtime_bench.rs"
+
+[[bin]]
+name = "axes_bench"
+path = "src/bin/axes_bench.rs"
+
+[[bin]]
+name = "bench_hidden"
+path = "src/bin/bench_hidden.rs"
+
+[[bin]]
+name = "energy_bench"
+path = "src/bin/energy_bench.rs"
+
+[[bin]]
+name = "resident_bench"
+path = "src/bin/resident_bench.rs"
+
+[[bin]]
+name = "serving_bench"
+path = "src/bin/serving_bench.rs"
+
+[[bin]]
+name = "kv_bench"
+path = "src/bin/kv_bench.rs"
+
+
+[[bin]]
+name = "m54_diag"
+path = "src/bin/_m54_diag.rs"

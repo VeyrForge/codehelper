@@ -1,0 +1,7 @@
+{
+  "metadata.gguf": "51058fd3d81c426cafc0ae1b40c1d3cc8bbceba2b28d8b3225280d6bd8989bea",
+  "dense.gguf": "7c69b783124fc91769929c20b10543902ca76a1af13144ce963324b1d85fa252",
+  "manifest.json": "5f41ac3be109588a83ced7dc133f33304cab037afdcece89ff3af696d49965a5",
+  "config.json": "215a3b345388a70c39f09e38548d8a90e47dcdc9868a15ee19ba0a570347eadd",
+  "tokenizer.json": "4b0e77d13f071afa2bf3d39ebadab36d78750dfbc493bfea83d5de9c3aed8483"
+}

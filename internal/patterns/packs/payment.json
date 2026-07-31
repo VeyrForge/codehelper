@@ -1,0 +1,36 @@
+{
+  "id": "payment",
+  "triggers": [
+    "payment",
+    "checkout",
+    "billing",
+    "invoice",
+    "stripe",
+    "paypal",
+    "subscription",
+    "charge",
+    "refund",
+    "webhook"
+  ],
+  "requirements": [
+    "Treat every charge/refund as a transactional, idempotent operation keyed by an idempotency id.",
+    "Store amounts in minor units (cents) using integer/decimal types; never float.",
+    "Persist provider event ids and verify webhook signatures before processing.",
+    "Make payment webhooks safe to re-run; deduplicate on event id.",
+    "Record audit trail of every state transition for invoices/orders/subscriptions.",
+    "Add tests for success, failure, retry, and webhook replay paths."
+  ],
+  "security": [
+    "never log full card numbers, CVV, or raw bank account details",
+    "verify webhook signature with the provider secret",
+    "scope api keys per environment and rotate them"
+  ],
+  "performance": [
+    "process webhooks asynchronously; respond fast and queue the work",
+    "do not block user requests on slow provider calls"
+  ],
+  "verify": [
+    "run unit and integration tests for changed payment files",
+    "replay a sample webhook event end-to-end in a sandbox"
+  ]
+}

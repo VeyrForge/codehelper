@@ -1,0 +1,236 @@
+package docs
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestResolveGoModulePathDerivation(t *testing.T) {
+	cases := []struct {
+		name    string
+		wantURL string
+	}{
+		{"github.com/spf13/cobra", "https://pkg.go.dev/github.com/spf13/cobra"},
+		{"golang.org/x/tools", "https://pkg.go.dev/golang.org/x/tools"},
+		{"go.uber.org/multierr", "https://pkg.go.dev/go.uber.org/multierr"},
+	}
+	for _, tc := range cases {
+		r := Resolve(tc.name, "")
+		if r.Origin != "derived" {
+			t.Errorf("%s: origin=%q want derived", tc.name, r.Origin)
+		}
+		if r.Ecosystem != "go" {
+			t.Errorf("%s: ecosystem=%q want go", tc.name, r.Ecosystem)
+		}
+		if r.TrustScore != 6 {
+			t.Errorf("%s: trust=%d want 6", tc.name, r.TrustScore)
+		}
+		// pkg.go.dev has no llms.txt: exactly one HTML source, no fabricated
+		// llms.txt candidates.
+		if len(r.Sources) != 1 || r.Sources[0].Kind != "html" || r.Sources[0].URL != tc.wantURL {
+			t.Errorf("%s: sources=%+v want single html %q", tc.name, r.Sources, tc.wantURL)
+		}
+	}
+}
+
+func TestResolveNpmScopedDerivation(t *testing.T) {
+	r := Resolve("@scope/widget", "")
+	if r.Origin != "derived" || r.Ecosystem != "npm" {
+		t.Fatalf("origin=%q ecosystem=%q want derived/npm", r.Origin, r.Ecosystem)
+	}
+	if len(r.Sources) != 1 || r.Sources[0].Kind != "html" ||
+		r.Sources[0].URL != "https://www.npmjs.com/package/@scope/widget" {
+		t.Errorf("sources=%+v want single npm html page", r.Sources)
+	}
+}
+
+func TestResolveCargoCrateDerivation(t *testing.T) {
+	// Bare crate names only derive docs.rs when the cargo ecosystem is known.
+	r := ResolveFull("some-crate", "", "cargo", "")
+	if r.Origin != "derived" || r.Ecosystem != "cargo" {
+		t.Fatalf("origin=%q ecosystem=%q want derived/cargo", r.Origin, r.Ecosystem)
+	}
+	if len(r.Sources) != 1 || r.Sources[0].URL != "https://docs.rs/some-crate/latest/some_crate" {
+		t.Errorf("sources=%+v want docs.rs page with underscored module", r.Sources)
+	}
+	// Without the hint, a bare name falls back to host guesses (not docs.rs).
+	g := Resolve("some-crate", "")
+	for _, s := range g.Sources {
+		if s.URL == "https://docs.rs/some-crate/latest/some_crate" {
+			t.Errorf("bare name without cargo hint should not derive docs.rs: %+v", g.Sources)
+		}
+	}
+}
+
+func TestPinVersionDocsRSAndPkgGoDev(t *testing.T) {
+	// Curated Rust crate: /latest/ → concrete semver.
+	tokio := Resolve("tokio", "1.40.0")
+	wantTokio := "https://docs.rs/tokio/1.40.0/tokio"
+	if tokio.DocBase != wantTokio {
+		t.Errorf("tokio DocBase=%q want %q", tokio.DocBase, wantTokio)
+	}
+	foundTokioHTML := false
+	for _, s := range tokio.Sources {
+		if s.Kind == "html" && s.URL == wantTokio {
+			foundTokioHTML = true
+		}
+		if strings.Contains(s.URL, "/latest/") {
+			t.Errorf("tokio source still uses /latest/: %q", s.URL)
+		}
+	}
+	if !foundTokioHTML {
+		t.Errorf("tokio sources=%+v missing html %q", tokio.Sources, wantTokio)
+	}
+
+	// Derived cargo crate with version.
+	crate := ResolveFull("some-crate", "0.2.1", "cargo", "")
+	wantCrate := "https://docs.rs/some-crate/0.2.1/some_crate"
+	if crate.DocBase != wantCrate {
+		t.Errorf("crate DocBase=%q want %q", crate.DocBase, wantCrate)
+	}
+
+	// Go module: append @vX.Y.Z (add leading v when missing).
+	cobra := Resolve("github.com/spf13/cobra", "1.8.1")
+	wantCobra := "https://pkg.go.dev/github.com/spf13/cobra@v1.8.1"
+	if cobra.DocBase != wantCobra {
+		t.Errorf("cobra DocBase=%q want %q", cobra.DocBase, wantCobra)
+	}
+	if len(cobra.Sources) == 0 || cobra.Sources[0].URL != wantCobra {
+		t.Errorf("cobra sources=%+v want %q", cobra.Sources, wantCobra)
+	}
+
+	// Already-versioned Go path must not double-append.
+	already := pinVersionURL("https://pkg.go.dev/github.com/spf13/cobra@v1.8.1", "1.9.0")
+	if already != "https://pkg.go.dev/github.com/spf13/cobra@v1.8.1" {
+		t.Errorf("already-pinned URL rewritten: %q", already)
+	}
+
+	// Non-registry hosts (e.g. react.dev) stay unchanged.
+	react := Resolve("react", "19.0.0")
+	if react.DocBase != "https://react.dev" {
+		t.Errorf("react DocBase should stay unversioned host, got %q", react.DocBase)
+	}
+}
+
+func TestResolveUnknownBareNameStillWorks(t *testing.T) {
+	r := Resolve("somerandomlib", "")
+	if r.Origin != "derived" {
+		t.Fatalf("origin=%q want derived", r.Origin)
+	}
+	if len(r.Sources) == 0 {
+		t.Fatal("unknown bare name should still derive candidate sources")
+	}
+	var haveLLMS, haveHTML bool
+	for _, s := range r.Sources {
+		switch s.Kind {
+		case "llms.txt":
+			haveLLMS = true
+		case "html":
+			haveHTML = true
+		}
+	}
+	if !haveLLMS || !haveHTML {
+		t.Errorf("bare name should derive both llms.txt and html candidates: %+v", r.Sources)
+	}
+}
+
+func TestLoadOverridesMergeAndPrecedence(t *testing.T) {
+	// Reset the package-level cache so this test sees fresh files.
+	overrideMu.Lock()
+	overrideCache = map[string][]libEntry{}
+	overrideMu.Unlock()
+
+	// Point the global registry dir at a temp HOME and the project dir at a
+	// temp repo. HOME/USERPROFILE drive paths.RegistryDir() (UserHomeDir).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows: os.UserHomeDir prefers USERPROFILE
+	repo := t.TempDir()
+
+	globalDir := filepath.Join(home, ".codehelper")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projDir := filepath.Join(repo, ".codehelper")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global override: adds "acme" and overrides curated "react".
+	write(t, globalDir, "docs-registry.json", `[
+	  {"match":["acme","acme-sdk"],"doc_base":"https://acme.example/docs","trust":7,"ecosystem":"npm"},
+	  {"match":["react"],"doc_base":"https://global-react.example","trust":3}
+	]`)
+	// Project override: re-overrides "react" (project wins over global).
+	write(t, projDir, "docs-overrides.json", `[
+	  {"match":["react"],"doc_base":"https://project-react.example","trust":9}
+	]`)
+
+	overrides := LoadOverrides(repo)
+
+	// New entry from the global file.
+	r := ResolveWith("acme-sdk", "", overrides)
+	if r.Origin != "override" || r.DocBase != "https://acme.example/docs" || r.Ecosystem != "npm" {
+		t.Errorf("acme-sdk override = %+v", r)
+	}
+
+	// Project override beats global override beats curated for react.
+	rr := ResolveWith("react", "", overrides)
+	if rr.Origin != "override" || rr.DocBase != "https://project-react.example" || rr.TrustScore != 9 {
+		t.Errorf("react should resolve to project override, got %+v", rr)
+	}
+
+	// A name not in overrides still falls through to curated.
+	c := ResolveWith("next", "", overrides)
+	if c.Origin != "curated" {
+		t.Errorf("next should remain curated, got %q", c.Origin)
+	}
+}
+
+func TestLoadOverridesBestEffort(t *testing.T) {
+	overrideMu.Lock()
+	overrideCache = map[string][]libEntry{}
+	overrideMu.Unlock()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	repo := t.TempDir()
+	projDir := filepath.Join(repo, ".codehelper")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed JSON and an entry missing doc_base must both be ignored.
+	write(t, projDir, "docs-overrides.json", `not json at all`)
+	if got := LoadOverrides(repo); len(got) != 0 {
+		t.Errorf("invalid override file should yield no entries, got %+v", got)
+	}
+
+	overrideMu.Lock()
+	overrideCache = map[string][]libEntry{}
+	overrideMu.Unlock()
+	write(t, projDir, "docs-overrides.json", `[{"match":["x"]},{"match":[],"doc_base":"https://y"}]`)
+	if got := LoadOverrides(repo); len(got) != 0 {
+		t.Errorf("entries missing doc_base/match should be dropped, got %+v", got)
+	}
+
+	// Missing files (empty repoRoot, no global file) never error.
+	overrideMu.Lock()
+	overrideCache = map[string][]libEntry{}
+	overrideMu.Unlock()
+	if got := LoadOverrides(""); len(got) != 0 {
+		t.Errorf("no files should yield no entries, got %+v", got)
+	}
+}
+
+func TestResolveFastAPIEcosystemIsPip(t *testing.T) {
+	r := Resolve("fastapi", "")
+	if r.Origin != "curated" {
+		t.Fatalf("origin=%q want curated", r.Origin)
+	}
+	if r.Ecosystem != "pip" {
+		t.Fatalf("ecosystem=%q want pip (not npm)", r.Ecosystem)
+	}
+}

@@ -1,0 +1,62 @@
+# Build artifacts
+bin/
+rust/target/
+/target/
+out/
+/Cargo.lock
+*.o
+*.d
+
+# Downloaded models and tensor data
+models/
+*.f32
+*.mx
+*.q4
+*.rep
+*.safetensors
+*.npy
+mx/
+npy/
+bench_layers/
+
+# Python
+.venv/
+.python_deps/
+__pycache__/
+*.pyc
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local agent / IDE tooling
+.codehelper/
+.cursor/
+.claude/
+.mcp.json
+AGENTS.md
+CLAUDE.md
+
+# Private local files (not part of the published project)
+TEST_REPORT.md
+docs/*
+!docs/
+!docs/**
+experiments/
+scripts/backfill_benchmark_txt.py
+scripts/codec_compare.py
+scripts/compare_frontier.py
+scripts/compare_runtime_stacks.py
+scripts/e2e_mixed_precision.py
+scripts/mixed_precision_analysis.py
+scripts/perplexity_mixed_precision.py
+scripts/estimate_model_ram.py
+scripts/download_small_model.sh
+scripts/vps-deploy.sh
+scripts/vps-setup.sh
+scripts/install-github-runner.sh
+scripts/fix-github-runner.sh

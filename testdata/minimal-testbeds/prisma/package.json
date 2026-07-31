@@ -1,0 +1,7 @@
+{
+  "name": "codehelper-prisma-stub",
+  "private": true,
+  "dependencies": {
+    "@prisma/client": "5.0.0"
+  }
+}

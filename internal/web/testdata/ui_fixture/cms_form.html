@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Codehelper UI fixture — CMS-like form</title>
+</head>
+<body>
+  <main id="content" data-ready="1">
+    <h1>Add New Plugin</h1>
+    <form id="plugin-upload-form" action="#upload">
+      <label for="plugin-name">Plugin name</label>
+      <input id="plugin-name" name="plugin_name" type="text" data-testid="plugin-name" placeholder="My Plugin"/>
+      <label for="plugin-plan">Channel</label>
+      <select id="plugin-plan" name="channel" data-testid="channel">
+        <option value="stable">Stable</option>
+        <option value="beta">Beta</option>
+      </select>
+      <label for="pluginzip">Plugin zip</label>
+      <input id="pluginzip" name="pluginzip" type="file" data-testid="plugin-zip" multiple/>
+      <button type="submit" id="install-plugin" data-testid="install">Install Now</button>
+    </form>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+    document.getElementById('plugin-upload-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var name = document.getElementById('plugin-name').value.trim();
+      var channel = document.getElementById('plugin-plan').value;
+      var files = document.getElementById('pluginzip').files;
+      var n = files ? files.length : 0;
+      document.getElementById('status').textContent =
+        'Ready to install ' + name + ' (' + channel + ') with ' + n + ' file(s)';
+    });
+  </script>
+</body>
+</html>
