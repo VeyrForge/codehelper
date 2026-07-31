@@ -7,8 +7,8 @@ import (
 )
 
 // autoEnsureCodehelperGitignore keeps codehelper-generated local artifacts
-// (.codehelper/, CLAUDE.md, .cursor/, .claude/) in the repo-root .gitignore
-// when that file already exists. Best-effort and non-blocking for callers.
+// (.codehelper/, .cursor/, .claude/, .codex/, .mcp.json, AGENTS.md, CLAUDE.md,
+// CODEHELPER*.md) in the repo-root .gitignore. Best-effort and non-blocking.
 func autoEnsureCodehelperGitignore(workPath string) {
 	go func() {
 		added, err := gitutil.EnsureCodehelperGitignored(workPath)

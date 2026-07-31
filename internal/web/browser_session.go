@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/VeyrForge/codehelper/internal/paths"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/VeyrForge/codehelper/internal/paths"
 )
 
 // In-process cookie jars keyed by Session name, backed by disk so CLI

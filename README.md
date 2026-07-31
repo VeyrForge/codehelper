@@ -47,7 +47,7 @@ npm run build
 
 Prebuilt **3.0.3** bundles (Linux, macOS, Windows) include `codehelper`, MCP server, **`ge` 1.1.1**, and **`greencompress` 1.1.1** on [GitHub Releases](https://github.com/VeyrForge/codehelper/releases).
 
-**Updates:** `codehelper upgrade` downloads the latest release from [VeyrForge/codehelper](https://github.com/VeyrForge/codehelper) by default. Override the upgrade source with `--repo owner/name` or `CODEHELPER_UPGRADE_REPO`. `codehelper update` rebuilds from a local git checkout.
+**Updates:** `codehelper upgrade` downloads the latest release from [VeyrForge/codehelper](https://github.com/VeyrForge/codehelper) by default. Override the upgrade source with `--repo owner/name` or `CODEHELPER_UPGRADE_REPO`. `codehelper update` rebuilds from a local git checkout and works from any directory (remembers the source path, or use `CODEHELPER_SOURCE` / `update /path/to/codehelper`).
 
 ---
 

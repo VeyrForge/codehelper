@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VeyrForge/codehelper/internal/devsource"
 	"github.com/VeyrForge/codehelper/internal/gitutil"
 	"github.com/VeyrForge/codehelper/internal/indexer"
 	"github.com/VeyrForge/codehelper/internal/meta"
@@ -26,31 +27,32 @@ func updateCmd() *cobra.Command {
 	var forceAnalyze bool
 	var skipProjects bool
 	c := &cobra.Command{
-		Use:   "update [path]",
+		Use:   "update [source-path]",
 		Short: "Rebuild and update codehelper from local source",
-		Long: "Rebuild codehelper from local source, replace current binary, run setup, refresh index, and ensure watch daemon is running.\n\n" +
+		Long: "Rebuild codehelper from the local source checkout, replace the installed binary, run setup, refresh the source index, and ensure watch daemons are healthy.\n\n" +
+			"Safe to run from **any directory**. Source checkout is resolved in order:\n" +
+			"  1. optional [source-path] argument\n" +
+			"  2. CODEHELPER_SOURCE\n" +
+			"  3. ~/.codehelper/source_path (remembered after a successful update)\n" +
+			"  4. current directory, if it is the codehelper checkout\n" +
+			"  5. a registered project that looks like the codehelper source tree\n\n" +
 			"Machines **without Go or a C compiler**: use **`codehelper upgrade`** to install the latest official GitHub release binary instead.\n\n" +
 			"**Windows bootstrap build** (fixed output path): run **`powershell -ExecutionPolicy Bypass -File .\\scripts\\build-local.ps1`** from the repo — downloads WinLibs into `.vendor` when needed and builds **`bin\\codehelper.exe`**.\n\n" +
 			"On Windows x86_64, if gcc is not on PATH, `update` downloads portable MinGW into .vendor/winlibs-mingw64 (first time ~260 MiB, then cached in the repo). " +
 			"Linux and macOS **source rebuild** requires gcc/cc on PATH (e.g. build-essential / Xcode CLT). Prebuilt Linux binaries still come from **`upgrade`**.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			root, err := os.Getwd()
+			start, err := os.Getwd()
 			if err != nil {
 				return err
 			}
+			explicit := ""
 			if len(args) > 0 {
-				root = args[0]
+				explicit = args[0]
 			}
-			root, err = filepath.Abs(root)
+			repoRoot, err := devsource.Resolve(explicit, start)
 			if err != nil {
 				return err
-			}
-
-			// Find repository root from the given path (or parent path).
-			repoRoot, err := gitutil.FindGitRoot(root)
-			if err != nil {
-				return fmt.Errorf("could not find git repository for update path %q: %w", root, err)
 			}
 			exePath, err := os.Executable()
 			if err != nil {
@@ -60,12 +62,18 @@ func updateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			fmt.Fprintf(os.Stderr, "update: source checkout: %s\n", repoRoot)
 			fmt.Fprintf(os.Stderr, "update: replacing executable:\n  %s\n", exePath)
 			fileVer, _ := version.ReadFromDir(repoRoot)
 			fmt.Fprintf(os.Stderr, "  running embedded version: %s  repo VERSION file: %s\n", version.Current(), fileVer)
 
 			if err := rebuildBinaryFromSource(repoRoot, exePath); err != nil {
 				return err
+			}
+			if err := devsource.Remember(repoRoot); err != nil {
+				fmt.Fprintln(os.Stderr, "update: remember source path:", err)
+			} else {
+				fmt.Fprintln(os.Stderr, "update: remembered source at ~/.codehelper/source_path (future updates work from any directory)")
 			}
 			if err := ensureWindowsUserPathPrefix(filepath.Dir(exePath)); err != nil {
 				return err

@@ -21,7 +21,7 @@ After cloning or pulling this repo:
 Then restart the IDE MCP server and call MCP project_context.
 
 update vs upgrade:
-  update    Rebuild from local source (needs Go + C compiler).
+  update    Rebuild from local source (any cwd; needs Go + C compiler).
   upgrade   Install latest release from GitHub (no Go required).
 
 Top-level flags (same as codehelper config project):

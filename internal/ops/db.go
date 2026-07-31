@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/VeyrForge/codehelper/internal/connections"
 	"github.com/go-sql-driver/mysql"
+	"github.com/VeyrForge/codehelper/internal/connections"
 	_ "modernc.org/sqlite"
 )
 

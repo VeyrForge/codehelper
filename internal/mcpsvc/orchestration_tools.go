@@ -51,19 +51,19 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	regRef := reg
 
 	s.AddTool(mcp.NewTool("orchestration",
-		mcp.WithDescription("Project orchestration gate: action=status is read-only; action=enable|disable writes local orchestration config (not source code). When enabled, use orchestrate for guided investigation with tool-trace memory and feedback/rerun. Prefer kickoff for simple one-shot starts; do not call enable unless the user wants the orchestrate loop."),
-		mcp.WithString("action", mcp.Required(), mcp.Description("enable | disable | status (status is read-only; enable/disable mutate project orchestration config)")),
-		mcp.WithString("repo", mcp.Description("Repository name")),
-		mcp.WithString("format", mcp.Description("toon (default) | json")),
+		mcp.WithDescription("Enable, disable, or check local orchestration for this project. action=status is read-only; action=enable|disable writes project orchestration config only (never product source). When enabled, prefer orchestrate for guided multi-tool investigation with run memory; prefer kickoff for simple one-shot starts without the orchestrate loop. Do not call enable unless the user asked for orchestration. Distinct from agent_plan (todo checklist) and from individual query/context tools."),
+		mcp.WithString("action", mcp.Required(), mcp.Description("One of: enable | disable | status")),
+		mcp.WithString("repo", mcp.Description("Indexed repository name when multiple roots are registered")),
+		mcp.WithString("format", mcp.Description("Response encoding: toon (default) | json")),
 		annotProjectProfile(),
 	), timedTool("orchestration", orchestrationControlHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestrate",
-		mcp.WithDescription("WORKFLOW composite (PREFERRED when orchestration is enabled) — classify task → deterministic tool chain → slim agent_brief + what_next + next_queries + compact trace. Prefer over manually chaining query/context/impact. Prefer kickoff for simple feature starts without orchestration. Default payload is token-lean TOON; detail=true for the full pack; format=json for JSON. Requires orchestration enabled. PARAM: task=. On wrong workflow: orchestration_feedback then orchestration_rerun."),
-		mcp.WithString("task", mcp.Required(), mcp.Description("What to investigate in natural language (canonical key is task=, same as kickoff)")),
-		mcp.WithString("repo", mcp.Description("Repository name")),
-		mcp.WithString("format", mcp.Description("toon (default) | json")),
-		mcp.WithBoolean("detail", mcp.Description("When true, include full answer_markdown and context_pack (default false — slim agent_brief + what_next + next_queries)")),
+		mcp.WithDescription("Run a guided investigation workflow: classify the task, call a deterministic tool chain, return a slim agent_brief + what_next + next_queries + compact trace. Requires orchestration enabled (`orchestration` action=enable first). Prefer this over manually chaining query/context/impact when orchestration is on. Prefer kickoff for simple feature starts without orchestration. Default payload is token-lean TOON; set detail=true for the full pack; format=json for JSON. On wrong scope/workflow: call orchestration_feedback then orchestration_rerun. Does not edit product source."),
+		mcp.WithString("task", mcp.Required(), mcp.Description("Investigation goal in natural language (same canonical key as kickoff task=)")),
+		mcp.WithString("repo", mcp.Description("Indexed repository name when multiple roots are registered")),
+		mcp.WithString("format", mcp.Description("Response encoding: toon (default) | json")),
+		mcp.WithBoolean("detail", mcp.Description("If true, include full answer_markdown and context_pack (default false: slim brief)"), mcp.DefaultBool(false)),
 		annotReadOnlyClosedWorld(),
 	), timedTool("orchestrate", orchestrateHandler(regRef)))
 
@@ -80,14 +80,14 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("orchestration_rerun", orchestrationRerunHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestration_feedback",
-		mcp.WithDescription("Record a user correction against an orchestrate run_id and update local orchestration memory (preferred/avoid entities + feedback rules). Use when orchestrate chose the wrong scope/symbol/workflow; then call orchestration_rerun with the returned constraints. Writes orchestration memory only — does not edit product source. Requires orchestration enabled. Distinct from agent_memory (ADR/learning.json)."),
-		mcp.WithString("run_id", mcp.Required(), mcp.Description("Run id from orchestrate to correct")),
-		mcp.WithString("message", mcp.Required(), mcp.Description("What was wrong or what to focus on next (aliases: feedback, correction, note)")),
-		mcp.WithString("correction_type", mcp.Description("wrong_scope | wrong_symbol | missing_tests | other (default wrong_scope)")),
-		mcp.WithString("preferred_entities", mcp.Description("Comma-separated symbols/areas to prioritize on rerun")),
-		mcp.WithString("avoid_entities", mcp.Description("Comma-separated symbols/areas to avoid on rerun")),
-		mcp.WithString("repo", mcp.Description("Repository name")),
-		mcp.WithString("format", mcp.Description("toon (default) | json")),
+		mcp.WithDescription("Record a user correction for a prior orchestrate run and update local orchestration routing memory (preferred/avoid entities + feedback rules). Use when orchestrate picked the wrong scope, symbol, or workflow. Then call orchestration_rerun with the returned constraints. Writes orchestration memory only — does not edit product source. Requires orchestration enabled. Distinct from agent_memory (ADR/learning.json under .codehelper/)."),
+		mcp.WithString("run_id", mcp.Required(), mcp.Description("orchestrate run_id to correct")),
+		mcp.WithString("message", mcp.Required(), mcp.Description("What was wrong or what to focus on next")),
+		mcp.WithString("correction_type", mcp.Description("One of: wrong_scope | wrong_symbol | missing_tests | other (default wrong_scope)")),
+		mcp.WithString("preferred_entities", mcp.Description("Comma-separated symbols or areas to prioritize on the next rerun")),
+		mcp.WithString("avoid_entities", mcp.Description("Comma-separated symbols or areas to avoid on the next rerun")),
+		mcp.WithString("repo", mcp.Description("Indexed repository name when multiple roots are registered")),
+		mcp.WithString("format", mcp.Description("Response encoding: toon (default) | json")),
 		annotTaskMutate(),
 	), timedTool("orchestration_feedback", orchestrationFeedbackHandler(regRef)))
 
@@ -108,11 +108,11 @@ func RegisterOrchestrationTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("explain_run", explainRunHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("orchestration_memory",
-		mcp.WithDescription("Read-only search of local orchestration routing memory (feedback rules, avoid lists, workflow hints from prior orchestrate runs). Use before orchestrate/orchestration_rerun to reuse project-specific constraints. Requires orchestration enabled. Does not search product code (use query/scout) and is separate from agent_memory/.codehelper/learning.json."),
-		mcp.WithString("query", mcp.Description("Free-text search over stored feedback/avoid/workflow hints")),
-		mcp.WithNumber("limit", mcp.Description("Max results (default 8)"), mcp.DefaultNumber(8)),
-		mcp.WithString("repo", mcp.Description("Repository name")),
-		mcp.WithString("format", mcp.Description("toon (default) | json")),
+		mcp.WithDescription("Read-only search of local orchestration routing memory: feedback rules, avoid lists, and workflow hints learned from prior orchestrate runs. Use before orchestrate or orchestration_rerun to reuse project-specific constraints. Requires orchestration enabled. Does not search product source code (use query or scout for that). Separate from agent_memory / .codehelper/learning.json."),
+		mcp.WithString("query", mcp.Description("Free-text filter over stored feedback, avoid lists, and workflow hints")),
+		mcp.WithNumber("limit", mcp.Description("Maximum results to return (default 8)"), mcp.DefaultNumber(8)),
+		mcp.WithString("repo", mcp.Description("Indexed repository name when multiple roots are registered")),
+		mcp.WithString("format", mcp.Description("Response encoding: toon (default) | json")),
 		annotReadOnlyClosedWorld(),
 	), timedTool("orchestration_memory", orchestrationMemoryHandler(regRef)))
 }

@@ -8,18 +8,25 @@ import (
 	"testing"
 )
 
-func TestEnsureCodehelperGitignored_noGitignore(t *testing.T) {
+func TestEnsureCodehelperGitignored_createsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
 	added, err := EnsureCodehelperGitignored(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added {
-		t.Fatal("expected no write when .gitignore missing")
+	if !added {
+		t.Fatal("expected create when .gitignore missing")
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".gitignore")); !os.IsNotExist(err) {
-		t.Fatal("should not create .gitignore")
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range expectedIgnoreLines() {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing ignore line %q in: %q", want, got)
+		}
 	}
 }
 
@@ -38,7 +45,7 @@ func TestEnsureCodehelperGitignored_appendsOnce(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	got := string(data)
-	for _, want := range []string{".codehelper/", "CLAUDE.md", ".cursor/", ".claude/"} {
+	for _, want := range expectedIgnoreLines() {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing ignore line %q in: %q", want, got)
 		}
@@ -58,7 +65,7 @@ func TestEnsureCodehelperGitignored_appendsOnce(t *testing.T) {
 func TestEnsureCodehelperGitignored_respectsExisting(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
-	existing := ".codehelper/\nCLAUDE.md\n.cursor/\n.claude/\n"
+	existing := strings.Join(expectedIgnoreLines(), "\n") + "\n"
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +93,7 @@ func TestEnsureCodehelperGitignored_fillsPartial(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, ".gitignore"))
 	got := string(data)
-	if !strings.Contains(got, "CLAUDE.md") || !strings.Contains(got, ".cursor/") || !strings.Contains(got, ".claude/") {
+	if !strings.Contains(got, "AGENTS.md") || !strings.Contains(got, ".mcp.json") || !strings.Contains(got, ".codex/") {
 		t.Fatalf("expected remaining ignores, got: %q", got)
 	}
 	// Must not duplicate .codehelper/
@@ -117,9 +124,18 @@ func TestMissingCodehelperIgnores(t *testing.T) {
 	if len(missing) != len(codehelperIgnoreEntries) {
 		t.Fatalf("want %d missing, got %v", len(codehelperIgnoreEntries), missing)
 	}
-	if got := missingCodehelperIgnores(".codehelper/\nCLAUDE.md\n.cursor/\n.claude/\n"); len(got) != 0 {
+	full := strings.Join(expectedIgnoreLines(), "\n") + "\n"
+	if got := missingCodehelperIgnores(full); len(got) != 0 {
 		t.Fatalf("want none missing, got %v", got)
 	}
+}
+
+func expectedIgnoreLines() []string {
+	out := make([]string, len(codehelperIgnoreEntries))
+	for i, e := range codehelperIgnoreEntries {
+		out[i] = e.line
+	}
+	return out
 }
 
 func initGitRepo(t *testing.T, dir string) {

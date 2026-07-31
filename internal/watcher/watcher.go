@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VeyrForge/codehelper/internal/paths"
 	"github.com/fsnotify/fsnotify"
+	"github.com/VeyrForge/codehelper/internal/paths"
 )
 
 // Event describes a coalesced batch of filesystem changes.

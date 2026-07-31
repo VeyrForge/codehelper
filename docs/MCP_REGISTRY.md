@@ -61,16 +61,17 @@ Listing: https://glama.ai/mcp/servers/VeyrForge/codehelper
 
 **After each public sync:** open the Glama admin page → **Sync Server** (empty pinned SHA) so README/version/tools refresh. Use **Try in Browser** once to seed usage.
 
-**License checklist note:** Glama’s “has a license” gate uses GitHub’s SPDX detector. Codehelper uses **BUSL-1.1** (recognized SPDX id). After a public sync, confirm GitHub shows `BUSL-1.1` on the license badge; re-score Glama if needed.
+**License checklist note:** Glama’s “has a license” gate follows **GitHub Licensee**, which maps unknown templates to `spdx_id: NOASSERTION`. **BUSL-1.1 is a valid SPDX id** and is declared in `package.json` / `LICENSE`, but it is **not** in GitHub’s choosealicense/Licensee catalog, so the GitHub API always reports `Other` / `NOASSERTION` for this repo (same for GreenEngine / GreenCompress). Glama then shows **license F** and may block install until they accept BUSL via `package.json` or an admin override. Re-sync / re-score will **not** flip license to A while GitHub stays on `NOASSERTION`. Escalate to Glama support/Discord as **VeyrForgeAdmin** with: LICENSE present, SPDX `BUSL-1.1` in `package.json`, GitHub `license.key=other`.
 
 **Admin (VeyrForgeAdmin):**
 
 1. **Sync Server** on the Glama page (empty pinned SHA).
-2. **Release build** — Admin → use repo `Dockerfile`; CMD `codehelper-mcp`.
+2. **Release build** — Admin → use repo `Dockerfile`; entrypoint `codehelper-mcp` (required for “Has a Glama release” + tool introspection / Server Coherence).
 3. **Profile** — set category *Coding Agents*, homepage `https://veyrforge.com/codehelper`, docs link to `docs/MCP_TOOLS.md`.
-4. **Related servers** — add related MCP servers in admin for cross-links.
-5. **Recent usage** — run **Try in Browser** once to seed telemetry.
-6. **Re-score** — open the **score** tab after sync + browser try.
+4. **Related servers** — add related MCP servers in admin for cross-links (clears “No related servers”).
+5. **Recent usage** — run **Try in Browser** once to seed telemetry (clears “No recent usage”).
+6. **Re-score** — open the **score** tab after release build + browser try.
+7. **License F** — open a Glama support ticket for BUSL-1.1 detection (cannot be fixed by re-uploading LICENSE alone).
 
 Quality = 70% Tool Definition Quality + 30% Server Coherence (passing ≥ 3.0 / grade B).
 

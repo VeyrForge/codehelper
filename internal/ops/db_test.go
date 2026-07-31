@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/VeyrForge/codehelper/internal/connections"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/VeyrForge/codehelper/internal/connections"
 	_ "modernc.org/sqlite"
 )
 

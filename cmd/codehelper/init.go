@@ -25,9 +25,10 @@ func initCmd() *cobra.Command {
 		Use:   "init [path]",
 		Short: "Initialize codehelper in any git repo (gitignore, index, watch daemon)",
 		Long: "Prepare a project directory for Codehelper from anywhere on your machine. " +
-			"Ensures codehelper-generated local artifacts (`.codehelper/`, `CLAUDE.md`, " +
-			"`.cursor/`, `.claude/`) are listed in `.gitignore` when that file exists, " +
-			"runs `analyze` for the repo (or shard), and starts the watch daemon. " +
+			"Ensures codehelper-generated local artifacts are listed in `.gitignore` " +
+			"(creates the file when missing): `.codehelper/`, `.cursor/`, `.claude/`, " +
+			"`.codex/`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`, `CODEHELPER*.md`. " +
+			"Then runs `analyze` for the repo (or shard) and starts the watch daemon. " +
 			"Run once per clone; use `codehelper analyze --force` to rebuild the index.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

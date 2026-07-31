@@ -240,12 +240,66 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           & ./scripts/ci-windows-arm64.ps1 -Version $env:VERSION
+      - name: Build MCPB package
+        if: matrix.goos != 'windows' || matrix.goarch != 'arm64'
+        shell: bash
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          ext=""
+          [ "${{ matrix.goos }}" = "windows" ] && ext=".exe"
+          version="$VERSION"
+          dist="codehelper_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          # Prefer already-staged dist folder; else extract archive
+          if [ ! -d "$dist" ]; then
+            if [ -f "${dist}.tar.gz" ]; then tar -xzf "${dist}.tar.gz"
+            elif [ -f "${dist}.zip" ]; then unzip -q "${dist}.zip"
+            else echo "missing dist for mcpb" >&2; exit 1
+            fi
+          fi
+          stage=$(mktemp -d)
+          mkdir -p "$stage/server"
+          cp "$dist/codehelper-mcp${ext}" "$stage/server/"
+          entry="server/codehelper-mcp${ext}"
+          case "${{ matrix.goos }}" in
+            windows) compat=win32 ;;
+            darwin) compat=darwin ;;
+            *) compat=linux ;;
+          esac
+          python3 - "$stage" "$version" "$entry" "$compat" <<'PY'
+          import json, pathlib, sys
+          stage, version, entry, compat = sys.argv[1:5]
+          man = {
+            "manifest_version": "0.3",
+            "name": "codehelper",
+            "display_name": "Codehelper",
+            "version": version,
+            "description": "Local-first repo intelligence for AI coding assistants: symbol graph, impact analysis, and 60+ MCP tools.",
+            "author": {"name": "VeyrForge", "url": "https://github.com/VeyrForge"},
+            "repository": {"type": "git", "url": "https://github.com/VeyrForge/codehelper.git"},
+            "homepage": "https://github.com/VeyrForge/codehelper",
+            "documentation": "https://github.com/VeyrForge/codehelper/blob/main/docs/MCP_TOOLS.md",
+            "license": "SEE LICENSE IN LICENSE",
+            "server": {
+              "type": "binary",
+              "entry_point": entry,
+              "mcp_config": {"command": "${__dirname}/" + entry, "args": []},
+            },
+            "tools_generated": True,
+            "compatibility": {"platforms": [compat]},
+          }
+          pathlib.Path(stage, "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
+          PY
+          (cd "$stage" && zip -qr "$GITHUB_WORKSPACE/codehelper_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.mcpb" manifest.json server)
+          ls -lh "codehelper_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.mcpb"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             codehelper_*.tar.gz
             codehelper_*.zip
+            codehelper_*.mcpb
           if-no-files-found: error
 
   release:
@@ -276,7 +330,7 @@ jobs:
           cd dist
           # Fail closed if the expected archive globs expand to nothing.
           shopt -s nullglob
-          files=(codehelper_*.tar.gz codehelper_*.zip)
+          files=(codehelper_*.tar.gz codehelper_*.zip codehelper_*.mcpb)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release archives in dist/ for checksums.txt" >&2
             ls -la >&2 || true
@@ -335,6 +389,7 @@ jobs:
           files: |
             dist/codehelper_*.tar.gz
             dist/codehelper_*.zip
+            dist/codehelper_*.mcpb
             dist/checksums.txt
             dist/sbom.cdx.json
             dist/sbom.spdx.json

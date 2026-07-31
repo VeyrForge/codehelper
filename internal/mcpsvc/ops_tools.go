@@ -64,12 +64,12 @@ func RegisterOpsTools(s *server.MCPServer, reg *registry.Registry) {
 	), timedTool("db_schema", dbSchemaHandler(regRef)))
 
 	s.AddTool(mcp.NewTool("run_alias",
-		mcp.WithDescription("Execute a user-configured command alias (local argv or remote recipe from connections). Use for repeatable ops recipes the user defined — not for ad-hoc shell (use verify/remote_exec). If the alias sets requires_approval, pass approved=true only after the user confirms. May mutate the environment via the alias command; not read-only."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Configured alias name")),
-		mcp.WithString("params", mcp.Description("JSON object of params for remote/templated aliases")),
-		mcp.WithBoolean("approved", mcp.Description("Required true when the alias is approval-gated / destructive"), mcp.DefaultBool(false)),
-		mcp.WithString("repo", mcp.Description("Repository name")),
-		mcp.WithString("format", mcp.Description("toon (default) | json")),
+		mcp.WithDescription("Execute a named, user-configured command alias (local argv or remote recipe from `codehelper connections`). Use for repeatable ops recipes the user already defined — never for ad-hoc shell (use verify for project checks, or remote_exec for named SSH recipes). If the alias requires approval, set approved=true only after the user confirms. May mutate the environment through the alias command; not a read-only tool."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Configured alias name from connections")),
+		mcp.WithString("params", mcp.Description("JSON object of parameters for templated or remote aliases")),
+		mcp.WithBoolean("approved", mcp.Description("Must be true when the alias is approval-gated or destructive"), mcp.DefaultBool(false)),
+		mcp.WithString("repo", mcp.Description("Indexed repository name when multiple roots are registered")),
+		mcp.WithString("format", mcp.Description("Response encoding: toon (default) | json")),
 		annotVerify(),
 	), timedTool("run_alias", runAliasHandler(regRef)))
 

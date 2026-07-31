@@ -12,18 +12,20 @@ import (
 )
 
 // codehelperIgnoreEntries are repo-local artifacts codehelper creates that must
-// not land in git. AGENTS.md and root .mcp.json stay out of this list on purpose:
-// they are portable shared setup (PATH command "codehelper") that clones benefit
-// from before the first analyze.
+// not land in git. Includes agent/editor wiring written by init/analyze.
 var codehelperIgnoreEntries = []struct {
 	line     string // exact line to append when missing
 	check    string // path to test against an existing matcher
 	altCheck string
 }{
 	{line: ".codehelper/", check: ".codehelper", altCheck: ".codehelper/meta.json"},
-	{line: "CLAUDE.md", check: "CLAUDE.md"},
 	{line: ".cursor/", check: ".cursor", altCheck: ".cursor/rules/codehelper.mdc"},
 	{line: ".claude/", check: ".claude", altCheck: ".claude/settings.local.json"},
+	{line: ".codex/", check: ".codex", altCheck: ".codex/config.toml"},
+	{line: ".mcp.json", check: ".mcp.json"},
+	{line: "AGENTS.md", check: "AGENTS.md"},
+	{line: "CLAUDE.md", check: "CLAUDE.md"},
+	{line: "CODEHELPER*.md", check: "CODEHELPER.md", altCheck: "CODEHELPER_TOOLS.md"},
 }
 
 const codehelperIgnoreBanner = "# codehelper (generated local — do not commit)"
@@ -36,9 +38,9 @@ type gitignoreCacheEntry struct {
 var gitignoreEnsureCache sync.Map
 
 // EnsureCodehelperGitignored appends ignore lines for codehelper-generated local
-// artifacts to the repo-root .gitignore when that file exists and does not
-// already cover them. It never creates a new .gitignore. Returns true when the
-// file was updated.
+// artifacts to the repo-root .gitignore when they are not already covered.
+// Creates .gitignore when missing (so init always leaves generated files untracked).
+// Returns true when the file was created or updated.
 func EnsureCodehelperGitignored(startPath string) (bool, error) {
 	// External index mode writes nothing into the repo, so there is nothing to
 	// ignore — leave the repo's .gitignore completely untouched (zero footprint).
@@ -52,10 +54,27 @@ func EnsureCodehelperGitignored(startPath string) (bool, error) {
 	giPath := filepath.Join(gitRoot, ".gitignore")
 	st, err := os.Stat(giPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+		if !os.IsNotExist(err) {
+			return false, err
 		}
-		return false, err
+		// No .gitignore yet — create one with just the codehelper block.
+		missing := missingCodehelperIgnores("")
+		var b strings.Builder
+		b.WriteString(codehelperIgnoreBanner)
+		b.WriteByte('\n')
+		for _, line := range missing {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		if err := os.WriteFile(giPath, []byte(b.String()), 0o644); err != nil {
+			return false, err
+		}
+		if st2, err := os.Stat(giPath); err == nil {
+			gitignoreEnsureCache.Store(gitRoot, gitignoreCacheEntry{modTime: st2.ModTime(), ok: true})
+		} else {
+			gitignoreEnsureCache.Store(gitRoot, gitignoreCacheEntry{modTime: time.Now().UTC(), ok: true})
+		}
+		return true, nil
 	}
 	if ce, ok := gitignoreEnsureCache.Load(gitRoot); ok {
 		entry := ce.(gitignoreCacheEntry)

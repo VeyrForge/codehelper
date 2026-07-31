@@ -12,7 +12,7 @@ var cliRefs = map[string]struct {
 	"config":         {group: "setup", summary: "User/project settings: search, browser, LLM, MCP tools on/off."},
 	"repair":         {group: "setup", summary: "Re-apply rules, MCP config, and index schema for all projects."},
 	"upgrade":        {group: "setup", summary: "Install latest release from GitHub (no Go required)."},
-	"update":         {group: "setup", summary: "Rebuild from local source, refresh index, ensure watch."},
+	"update":         {group: "setup", summary: "Rebuild from local source (any cwd), refresh index, ensure watch."},
 	"analyze":        {group: "index", summary: "Index repository into the symbol/call graph.", related: "diagnostics"},
 	"watch":          {group: "index", summary: "Auto-index on file change (foreground or --daemon)."},
 	"enrich":         {group: "index", summary: "Index-time LLM enrichment (purpose + aliases).", related: "green"},
